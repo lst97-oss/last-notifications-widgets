@@ -1,0 +1,28 @@
+{
+  "name": "@last-notifications-widgets/client",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Framework-free inbox client for the last-notifications bell.",
+  "license": "MIT",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "bunx tsup src/index.ts src/server.ts --format esm --clean --dts --target es2022 --out-dir dist",
+    "typecheck": "bun check --no-script"
+  },
+  "devDependencies": {
+    "tsup": "^9.0.0",
+    "typescript": "^6.0.3"
+  }
+}

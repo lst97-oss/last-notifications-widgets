@@ -1,0 +1,5 @@
+{
+  "$schema": "https://react.doctor/schema/config.json",
+  // Keep the report on this machine: `share: true` (the default) uploads it to react.doctor.
+  "share": false
+}

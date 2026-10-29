@@ -1,0 +1,100 @@
+/* Everything that styles an element is scoped to the bell root, so the host page keeps its own styles.
+   Tokens are declared on the root: inline themeVars and host overrides (`#nav .ln-bell { … }`) win. */
+@import "tw-animate-css";
+@reference "shadcn/tailwind.css";
+
+@custom-variant dark (&:where(:scope.dark, :scope.dark *));
+
+@scope (.ln-bell) {
+  @layer theme, base, components, utilities;
+  @import "tailwindcss/theme.css" layer(theme) theme(inline);
+  @import "tailwindcss/preflight.css" layer(base);
+  @import "tailwindcss/utilities.css" layer(utilities);
+
+  @layer theme {
+    :scope {
+      --background: oklch(1 0 0);
+      --foreground: oklch(0.145 0 0);
+      --popover: oklch(1 0 0);
+      --popover-foreground: oklch(0.145 0 0);
+      --primary: oklch(0.205 0 0);
+      --primary-foreground: oklch(0.985 0 0);
+      --muted: oklch(0.97 0 0);
+      --muted-foreground: oklch(0.556 0 0);
+      --accent: oklch(0.97 0 0);
+      --accent-foreground: oklch(0.205 0 0);
+      --border: oklch(0.922 0 0);
+      --ring: oklch(0.708 0 0);
+      --radius: 0.625rem;
+      --destructive: oklch(0.577 0.245 27.325);
+      --destructive-foreground: oklch(0.985 0 0);
+
+      --ln-font-family: inherit;
+      --ln-font-size: 0.875rem;
+      --ln-line-height: 1.5;
+      --ln-spacing: 0.25rem;
+      --ln-trigger-size: 2.25rem;
+      --ln-popover-width: 22rem;
+      --ln-popover-max-height: 28rem;
+      --ln-popover-shadow: 0 10px 30px oklch(0 0 0 / 0.12), 0 0 0 1px var(--border);
+      --ln-badge-background: var(--destructive);
+      --ln-badge-foreground: var(--destructive-foreground);
+      --ln-unread-indicator: var(--primary);
+    }
+
+    :scope.dark {
+      --background: oklch(0.145 0 0);
+      --foreground: oklch(0.985 0 0);
+      --popover: oklch(0.205 0 0);
+      --popover-foreground: oklch(0.985 0 0);
+      --primary: oklch(0.922 0 0);
+      --primary-foreground: oklch(0.205 0 0);
+      --muted: oklch(0.269 0 0);
+      --muted-foreground: oklch(0.708 0 0);
+      --accent: oklch(0.269 0 0);
+      --accent-foreground: oklch(0.985 0 0);
+      --border: oklch(1 0 0 / 10%);
+      --ring: oklch(0.556 0 0);
+      --destructive: oklch(0.704 0.191 22.216);
+      --destructive-foreground: oklch(0.985 0 0);
+    }
+  }
+
+  @theme inline {
+    --color-background: var(--background);
+    --color-foreground: var(--foreground);
+    --color-popover: var(--popover);
+    --color-popover-foreground: var(--popover-foreground);
+    --color-primary: var(--primary);
+    --color-primary-foreground: var(--primary-foreground);
+    --color-muted: var(--muted);
+    --color-muted-foreground: var(--muted-foreground);
+    --color-accent: var(--accent);
+    --color-accent-foreground: var(--accent-foreground);
+    --color-border: var(--border);
+    --color-ring: var(--ring);
+    --color-destructive: var(--destructive);
+    --color-destructive-foreground: var(--destructive-foreground);
+    --radius-sm: calc(var(--radius) * 0.6);
+    --radius-md: calc(var(--radius) * 0.8);
+    --radius-lg: var(--radius);
+    --radius-xl: calc(var(--radius) * 1.4);
+  }
+
+  @layer base {
+    :scope {
+      box-sizing: border-box;
+      position: relative;
+      display: inline-block;
+      font-family: var(--ln-font-family);
+      font-size: var(--ln-font-size);
+      line-height: var(--ln-line-height);
+      color: var(--foreground);
+      color-scheme: light;
+    }
+
+    :scope.dark {
+      color-scheme: dark;
+    }
+  }
+}

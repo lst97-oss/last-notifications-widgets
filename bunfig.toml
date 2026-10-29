@@ -1,0 +1,10 @@
+[fmt]
+printWidth = 120
+semi = false
+singleQuote = true
+trailingComma = "all"
+ignorePatterns = ["**/*.json", "**/*.jsonc", "**/*.md", "**/*.toml", "**/*.yaml", "**/*.yml", ".changeset/", "**/dist/"]
+
+[[fmt.overrides]]
+files = ["**/*.css"]
+options = { singleQuote = false }

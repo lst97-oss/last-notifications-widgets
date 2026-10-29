@@ -1,0 +1,10 @@
+node_modules
+dist
+.output
+.vercel
+*.log
+.DS_Store
+.tmp
+# copied in by scripts/assemble-package.ts
+/packages/last-notifications-widgets/README.md
+/packages/last-notifications-widgets/LICENSE

@@ -1,0 +1,38 @@
+{
+	"$schema": "https://biomejs.dev/schemas/2.6.4/schema.json",
+	"vcs": { "enabled": true, "clientKind": "git", "useIgnoreFile": true },
+	"files": {
+		"includes": [
+			"**",
+			"!**/dist",
+			"!**/node_modules",
+			"!**/*.json",
+			"!**/.changeset",
+			"!**/*.css"
+		]
+	},
+	"formatter": { "enabled": false },
+	"linter": {
+		"enabled": true,
+		"includes": ["packages/*/src/**", "scripts/**", "examples/*/src/**"],
+		"rules": { "preset": "recommended" }
+	},
+	"assist": {
+		"enabled": true,
+		"includes": ["packages/*/src/**", "scripts/**", "examples/*/src/**"],
+		"actions": {
+			"source": {
+				"organizeImports": {
+					"level": "on",
+					"options": { "sortBareImports": false }
+				}
+			}
+		}
+	},
+	"overrides": [
+		{
+			"includes": ["packages/react/**"],
+			"linter": { "domains": { "react": "recommended" } }
+		}
+	]
+}

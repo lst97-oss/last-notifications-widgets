@@ -1,0 +1,40 @@
+{
+  "name": "last-notifications-widgets",
+  "version": "0.0.0",
+  "private": true,
+  "license": "MIT",
+  "type": "module",
+  "packageManager": "bun@1.4.4",
+  "workspaces": [
+    "packages/*",
+    "examples/*"
+  ],
+  "scripts": {
+    "build": "bun run build:client && bun run -F @last-notifications-widgets/react build && bun scripts/assemble-package.ts",
+    "typecheck": "bun check --no-script && bun run build:client && bun run -F @last-notifications-widgets/react typecheck",
+    "lint": "biome check --error-on-warnings .",
+    "lint:fix": "biome check --error-on-warnings --write .",
+    "format": "bun fmt",
+    "format:check": "bun fmt --check",
+    "test": "bun test",
+    "test:bell": "bun run build && bun scripts/check-bell.ts",
+    "check": "bun run format:check && bun run lint && bun run typecheck && bun test",
+    "package:check": "bun scripts/check-package.ts",
+    "changeset": "changeset",
+    "version": "changeset version && bun install",
+    "release": "bun run check && bun run build && bun run package:check && changeset publish",
+    "build:client": "bun run -F @last-notifications-widgets/client build"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.6.3",
+    "@changesets/cli": "^3.0.3",
+    "@lst97-oss/last-httprism": "0.2.0",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "bun-types": "^1.4.4",
+    "playwright-core": "1.64.1",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
+    "typescript": "^6.0.3"
+  }
+}

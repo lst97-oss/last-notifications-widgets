@@ -12,7 +12,12 @@ import { NotificationBell } from '@lst97-oss/last-notifications-widgets/react'
   baseUrl="https://notifications.example.com"
   appKey="my-app"
   session={hostUser.id}
-  getToken={() => fetch('/api/notifications-token').then((r) => r.json()).then((d) => d.token)}
+  getToken={async () => {
+    const response = await fetch('/api/notifications-token')
+    if (!response.ok) throw new Error('token request failed') // an error, not a signed-out visitor
+    return (await response.json()).token
+  }}
+  onError={(error) => console.warn('[notifications]', error.source, error.code)}
 />
 ```
 
@@ -45,6 +50,7 @@ await notifications.publish({
 - `setContact(recipientKey, { channel: 'email' | 'webhook', address })` stores where a recipient is reached. A webhook URL needs the `recipients:update` permission.
 - `setPreference(recipientKey, { channel, enabled })` opts a recipient in or out of a channel.
 - `deleteNotification(id, { recipientKey })` removes one notification. The key needs `notifications:delete`.
+- A failed call rejects with `ApiError`, imported from the `/server` entry. `code` is the server's code, or `NETWORK_ERROR` and `TIMEOUT` when no response arrived (`status` is `0`). Branch on `code`, never on `status`.
 
 ### Delivery settings and recipients
 
@@ -83,6 +89,14 @@ await notifications.recipients.clear('user-42', ['email']) // idempotent
 - **`session` is the isolation guard.** A change stops the old store, drops its items, and refetches.
   `null` or `undefined` renders nothing.
 - **`getToken` returning `null`** means a signed-out visitor: nothing renders.
+- **`getToken` throwing** is an error, not a signed-out visitor. The bell keeps its icon, adds a warning
+  triangle, and its popup shows one general message with "Try again", which calls `getToken` again. Throw
+  on an upstream failure; return `null` only when the visitor is signed out.
+- **`onError`** hears every failure, for logs and metrics. A stream outage and a token outage are each reported
+  once, not on every retry. The bell shows its error state when it cannot start or load. A stream outage does
+  not show it, so the bell keeps its last list until the stream returns. A throwing `onError` cannot break it.
+- **`NotificationBellUnavailable`** renders the same error bell for a host that cannot mount the live bell
+  yet. It takes an `onRetry` and no token, key or URL.
 - **`getToken` must return a valid token.** Mint on each call, or cache only until shortly before the
   token expires. A host that keeps returning an expired token leaves the bell retrying with it, up to every
   30 seconds, and the bell never recovers until a valid token arrives.

@@ -18,3 +18,5 @@ Guidance for agents working in this repo. The scope is a single bell widget; see
 - Portals render inside the `.ln-bell` root (`WidgetRootContext`) so the scoped theme applies.
 - Browser checks must bundle with tsup/esbuild. Bun's bundler breaks Base UI's popover, which surfaces as a false `target.addEventListener is not a function`.
 - Do not hand-edit `src/ui/*` beyond the portal container; re-add components with `bunx shadcn add <name>`.
+- `getToken` throwing is an error state, not signed-out. Only `null` means signed-out; the store must never turn a throw into `anonymous`.
+- Every failed call throws `ApiError`, including network and timeout failures (`status` 0). Failures reach the host through `onError`. The bell's own error state covers a failed start or load, not a stream outage; never add a host-rendered error UI.

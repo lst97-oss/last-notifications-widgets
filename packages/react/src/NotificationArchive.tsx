@@ -1,6 +1,7 @@
 import type { InboxState, InboxStore } from '@last-notifications-widgets/client'
 import { ArchiveX } from 'lucide-react'
 
+import { cn } from '@/lib/utils'
 import { Button } from '@/ui/button'
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from '@/ui/empty'
 import { NotificationError } from './NotificationError'
@@ -55,7 +56,7 @@ export default function NotificationArchive({
             action="restore"
             onAction={() => {
               onAnnounce(`Restored ${item.title}`)
-              void store.restore([item.id])
+              void store.restore([item.id]).then((applied) => applied || onAnnounce(`Couldn't restore ${item.title}`))
             }}
           />
         ))}
@@ -67,9 +68,9 @@ export default function NotificationArchive({
             size="sm"
             disabled={archive.loadingMore}
             onClick={() => void store.loadMoreArchive()}
-            className="pointer-coarse:min-h-11"
+            className={cn('pointer-coarse:min-h-11', archive.loadMoreFailed && 'text-destructive')}
           >
-            Load more
+            {archive.loadMoreFailed ? "Couldn't load more. Try again" : 'Load more'}
           </Button>
         </div>
       )}

@@ -44,7 +44,9 @@ export function NotificationHeader({
             aria-label="Mark all as read"
             disabled={state.unread === 0}
             className={`${iconButton} pointer-coarse:size-11`}
-            onClick={() => void store.markAllRead()}
+            onClick={() =>
+              void store.markAllRead().then((applied) => applied || onAnnounce("Couldn't mark all as read"))
+            }
           >
             <CheckCheck aria-hidden="true" className="size-4" />
           </TooltipTrigger>
@@ -67,7 +69,13 @@ export function NotificationHeader({
           <DropdownMenuContent align="end">
             <DropdownMenuItem
               disabled={!hasRead}
-              onClick={() => void store.archiveRead().then(() => onAnnounce('Archived read notifications'))}
+              onClick={() =>
+                void store
+                  .archiveRead()
+                  .then((applied) =>
+                    onAnnounce(applied ? 'Archived read notifications' : "Couldn't archive read notifications"),
+                  )
+              }
             >
               Archive all read
             </DropdownMenuItem>

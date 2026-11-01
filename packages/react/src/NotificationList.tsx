@@ -2,6 +2,7 @@ import type { InboxState, InboxStore } from '@last-notifications-widgets/client'
 import { BellRing, Loader2Icon } from 'lucide-react'
 import { useCallback } from 'react'
 
+import { cn } from '@/lib/utils'
 import { Button } from '@/ui/button'
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from '@/ui/empty'
 import { NotificationError } from './NotificationError'
@@ -62,10 +63,12 @@ export function NotificationList({
             key={item.id}
             item={item}
             action="archive"
-            onOpen={() => store.markRead([item.id])}
+            onOpen={async () => {
+              await store.markRead([item.id])
+            }}
             onAction={() => {
               onAnnounce(`Archived ${item.title}`)
-              void store.archive([item.id])
+              void store.archive([item.id]).then((applied) => applied || onAnnounce(`Couldn't archive ${item.title}`))
             }}
           />
         ))}
@@ -79,10 +82,10 @@ export function NotificationList({
               size="sm"
               disabled={state.loadingMore}
               onClick={() => void store.loadMore()}
-              className="pointer-coarse:min-h-11"
+              className={cn('pointer-coarse:min-h-11', state.loadMoreFailed && 'text-destructive')}
             >
               {state.loadingMore && <Loader2Icon aria-hidden="true" className="size-4 animate-spin" />}
-              Load more
+              {state.loadMoreFailed ? "Couldn't load more. Try again" : 'Load more'}
             </Button>
           </div>
         </>

@@ -4,7 +4,7 @@
 // importing the inbox client.
 import { callApi, type FetchLike } from './http'
 
-export type { FetchLike } from './http'
+export { ApiError, type FetchLike } from './http'
 
 // The server validates channel names; this list is the SDK's typed view of them.
 export const CHANNELS = ['inapp', 'email', 'webpush', 'webhook'] as const

@@ -2,12 +2,13 @@
 
 export type FetchLike = (input: string | URL | Request, init?: RequestInit) => Promise<Response>
 
+// Every failed call throws this. `status` is 0 when no response arrived (a timeout, or a refused or dropped connection).
 export class ApiError extends Error {
   readonly code: string
   readonly status: number
 
-  constructor(code: string, message: string, status: number) {
-    super(message)
+  constructor(code: string, message: string, status: number, options?: { cause?: unknown }) {
+    super(message, options)
     this.name = 'ApiError'
     this.code = code
     this.status = status
@@ -18,7 +19,19 @@ type Envelope<T> = { data?: T; error?: { code: string; message: string } }
 
 // The server answers `{data}` on success and `{error:{code,message}}` on failure; anything else is a failure.
 export async function callApi<T>(fetcher: FetchLike, url: string, init: RequestInit = {}): Promise<T> {
-  const response = await fetcher(url, init)
+  let response: Response
+  try {
+    response = await fetcher(url, init)
+  } catch (cause) {
+    // A fetch that rejects never reached the server. Without this, the caller would see a raw TypeError or DOMException.
+    const timedOut = cause instanceof DOMException && cause.name === 'TimeoutError'
+    throw new ApiError(
+      timedOut ? 'TIMEOUT' : 'NETWORK_ERROR',
+      timedOut ? 'The notifications server did not answer in time.' : "Couldn't reach the notifications server.",
+      0,
+      { cause },
+    )
+  }
   const envelope = (await response.json().catch(() => null)) as Envelope<T> | null
   if (!response.ok || envelope === null || envelope.data === undefined) {
     throw new ApiError(

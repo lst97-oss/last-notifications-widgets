@@ -95,6 +95,17 @@ describe('createNotificationsClient', () => {
     expect(failure).toMatchObject({ code: 'INVALID_API_KEY', status: HttpStatus.UNAUTHORIZED.code })
   })
 
+  test('a network failure rejects with ApiError NETWORK_ERROR, so callers can tell it from a bad request', async () => {
+    const fetchImpl = (async () => {
+      throw new TypeError('fetch failed')
+    }) as typeof fetch
+    const error = await client(fetchImpl)
+      .mintRecipientToken('user-1')
+      .catch((caught: unknown) => caught)
+    expect(error).toBeInstanceOf(ApiError)
+    expect(error).toMatchObject({ code: 'NETWORK_ERROR', status: 0 })
+  })
+
   test('refuses an apiKey that is not an app key', () => {
     expect(() =>
       createNotificationsClient({ baseUrl: 'https://notify.test', appKey: 'app-1', apiKey: 'rtk_nope' }),

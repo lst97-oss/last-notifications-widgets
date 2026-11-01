@@ -1,3 +1,4 @@
+import { HttpStatus } from '@lst97-oss/last-httprism'
 import react from '@vitejs/plugin-react'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { defineConfig, loadEnv, type Plugin } from 'vite'
@@ -17,8 +18,16 @@ function tokenEndpoint(env: Record<string, string>): Plugin {
           `${base}/api/v1/apps/${env.NOTIFICATIONS_APP_KEY}/recipients/${recipientKey}/token`,
           { method: 'POST', headers: { authorization: `Bearer ${env.NOTIFICATIONS_API_KEY}` } },
         )
-        const body = (await upstream.json()) as { data?: { token: string } }
         res.setHeader('content-type', 'application/json')
+        // A failed mint is an error, not a signed-out visitor, so the bell shows its error state.
+        if (!upstream.ok) {
+          res.statusCode = HttpStatus.BAD_GATEWAY.code
+          res.end(
+            JSON.stringify({ error: { code: 'NOTIFICATIONS_UNAVAILABLE', message: 'Notifications are unavailable.' } }),
+          )
+          return
+        }
+        const body = (await upstream.json()) as { data?: { token: string } }
         res.end(JSON.stringify({ token: body.data?.token ?? null }))
       })
     },

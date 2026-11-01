@@ -94,6 +94,13 @@ const sessions = new Map([
   ],
 ])
 
+// The checks flip these to make the stub answer 500, as a notification server does during an outage.
+const outage = { token: false, list: false }
+const serverError = () =>
+  Response.json(
+    { error: { code: 'INTERNAL_ERROR', message: 'Something went wrong. Please try again.' } },
+    { status: HttpStatus.INTERNAL_SERVER_ERROR.code },
+  )
 const reads: unknown[] = []
 const archives: { ids?: string[]; read?: boolean }[] = []
 const restores: { ids: string[] }[] = []
@@ -140,9 +147,11 @@ const route = async (request: Request): Promise<Response> => {
     })
   }
   if (url.pathname === '/api/notifications-token') {
+    if (outage.token) return serverError()
     return Response.json({ token: sessions.get(url.searchParams.get('session') ?? '')?.token ?? null })
   }
   if (url.pathname === '/api/v1/apps/app-1/inbox' && request.method === 'GET') {
+    if (outage.list) return serverError()
     const session = sessionFor(bearer(request))
     if (!session) return denied()
     const archivedView = url.searchParams.get('view') === 'archived'
@@ -294,6 +303,64 @@ try {
   await page.goto(`${base}/?api=${encodeURIComponent(apiBase)}&session=user-z`)
   await Bun.sleep(400)
   check('an anonymous visitor renders nothing', (await page.locator('.ln-bell').count()) === 0)
+
+  // A notification server that answers 500 keeps the bell on screen with a warning. It never hides the bell.
+  const hostErrors = () =>
+    page.evaluate(() => (window as unknown as { __errors: { source: string; code: string }[] }).__errors)
+  outage.token = true
+  await page.goto(`${base}/?api=${encodeURIComponent(apiBase)}&session=user-a`)
+  await page.locator('[data-ln-error-icon]').waitFor()
+  check('a token 500 keeps the bell on screen', (await page.locator('.ln-trigger').count()) === 1)
+  check('a token 500 shows the warning triangle', (await page.locator('[data-ln-error-icon]').count()) === 1)
+  // The triangle is an SVG drawn in currentColor, so the colour is read from the SVG itself.
+  const triangleColor = await page
+    .locator('[data-ln-error-icon] svg')
+    .evaluate((element) => getComputedStyle(element).color)
+  check('themeVars.destructive colours the warning', triangleColor === 'rgb(0, 128, 0)', triangleColor)
+  const failedLabel = await page.locator('.ln-trigger').getAttribute('aria-label')
+  check('the failed bell is labelled as such', failedLabel === "Notifications, couldn't load", failedLabel ?? '')
+  const failedAnnouncement = (await page.locator('[role="status"]').textContent()) ?? ''
+  check('the failure is announced', failedAnnouncement.includes("couldn't load"), failedAnnouncement)
+  const tokenErrors = await hostErrors()
+  check(
+    'the host hears the token failure',
+    tokenErrors.some((error) => error.source === 'token'),
+    JSON.stringify(tokenErrors),
+  )
+
+  await openPopover()
+  const general = (await page.locator('[data-ln-error]').textContent()) ?? ''
+  check('the popup shows one general message', general.includes("Couldn't load notifications."), general)
+  outage.token = false
+  await page.getByRole('button', { name: 'Try again' }).click()
+  await page.locator('.ln-item').first().waitFor()
+  check('Try again recovers the list', (await page.locator('.ln-item').count()) > 0)
+  check('the warning clears once the list loads', (await page.locator('[data-ln-error-icon]').count()) === 0)
+
+  outage.list = true
+  await page.goto(`${base}/?api=${encodeURIComponent(apiBase)}&session=user-a`)
+  await page.locator('[data-ln-error-icon]').waitFor()
+  check('a list 500 shows the warning triangle', (await page.locator('[data-ln-error-icon]').count()) === 1)
+  const listErrors = await hostErrors()
+  check(
+    'the host hears the list failure with the server code',
+    listErrors.some((error) => error.source === 'inbox' && error.code === 'INTERNAL_ERROR'),
+    JSON.stringify(listErrors),
+  )
+  outage.list = false
+
+  // A host that cannot mount the live bell yet renders the same failed bell, and its retry reaches the host.
+  await page.goto(`${base}/?api=${encodeURIComponent(apiBase)}&session=user-a&unavailable=1`)
+  await page.locator('[data-ln-error-icon]').waitFor()
+  check(
+    'the unavailable bell shows the same warning triangle',
+    (await page.locator('[data-ln-error-icon]').count()) === 1,
+  )
+  await page.locator('.ln-trigger').click()
+  await page.locator('[data-ln-error]').waitFor()
+  await page.getByRole('button', { name: 'Try again' }).click()
+  const retried = await page.locator('body').getAttribute('data-retried')
+  check('Try again on the unavailable bell calls the host onRetry', retried === '1', retried ?? '')
 
   // A row with a link navigates away on click; its mark-read must still reach the server.
   const linked = await browser.newPage()

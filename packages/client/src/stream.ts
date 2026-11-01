@@ -48,6 +48,8 @@ export function openSseStream(fetchImpl: typeof fetch, url: string, token: strin
   }
 
   void (async () => {
+    // What went wrong, for the host's logs. It travels in the error event's `data`.
+    let failure = ''
     try {
       const response = await fetchImpl(url, {
         headers: { authorization: `Bearer ${token}`, accept: 'text/event-stream' },
@@ -56,10 +58,11 @@ export function openSseStream(fetchImpl: typeof fetch, url: string, token: strin
       if (!response.ok || response.body === null) throw new Error(`stream answered ${response.status}`)
       emit('open', EMPTY)
       await read(response.body.pipeThrough(new TextDecoderStream()))
-    } catch {
+    } catch (error) {
       // A refused or dropped connection is reported below. An aborted one is our own close, so it is not.
+      failure = error instanceof Error ? error.message : ''
     }
-    if (!controller.signal.aborted) emit('error', EMPTY)
+    if (!controller.signal.aborted) emit('error', { data: failure, lastEventId: '' })
   })()
 
   return {

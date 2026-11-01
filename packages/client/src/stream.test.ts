@@ -61,6 +61,17 @@ describe('openSseStream', () => {
     expect(errors).toBe(1)
   })
 
+  test('the error says why the connection failed, for the host to log', async () => {
+    const fetchImpl = (async () => new Response('nope', { status: 500 })) as typeof fetch
+    const errors: StreamEvent[] = []
+    const stream = openSseStream(fetchImpl, STREAM_URL, 'lrt_old')
+    stream.addEventListener('error', (event) => {
+      errors.push(event)
+    })
+    await settle()
+    expect(errors.map((event) => event.data)).toEqual(['stream answered 500'])
+  })
+
   test('a connection the server ends reports an error, so the store reconnects', async () => {
     const fetchImpl = (async () => new Response(bodyOf(['event: notification\ndata: {}\nid: c1\n\n']))) as typeof fetch
     let opened = 0

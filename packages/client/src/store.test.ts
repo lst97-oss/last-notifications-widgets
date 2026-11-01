@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from 'bun:test'
 import { HttpStatus } from '@lst97-oss/last-httprism'
 
 import { type InboxItem, type InboxPage, LOAD_ERROR_MESSAGE } from './api'
-import { createInboxStore, type InboxStore, type Stream, type StreamEvent } from './store'
+import { createInboxStore, type InboxError, type InboxStore, type Stream, type StreamEvent } from './store'
 
 const at = '2026-10-29T10:00:00.000Z'
 const row = (id: string, title: string, readAt: string | null = null): InboxItem => ({
@@ -66,6 +66,8 @@ function harness(
     stale?: string
     fetch?: (url: string) => Response | Promise<Response>
     tokenRefreshMs?: number
+    getToken?: () => Promise<string | null>
+    onError?: (error: InboxError) => void
   } = {},
 ) {
   const tokens = [...(options.tokens ?? ['lrt_1'])]
@@ -74,7 +76,8 @@ function harness(
   const store = createInboxStore({
     baseUrl: 'https://notify.test',
     appKey: 'app-1',
-    getToken: async () => options.stale ?? tokens.shift() ?? null,
+    getToken: options.getToken ?? (async () => options.stale ?? tokens.shift() ?? null),
+    onError: options.onError,
     fetchImpl: async (input, init) => {
       const url = String(input)
       const headers = init?.headers as Record<string, string> | undefined
@@ -461,5 +464,198 @@ describe('inbox store paging and archive', () => {
     await store.archive(['b'])
     await settle(30)
     expect(store.getState().items.map((item) => item.id)).toContain('b')
+  })
+
+  test('archive all read reaches the server when no loaded row is read', async () => {
+    const { store, sent } = harness({
+      fetch: (url) => {
+        if (url.includes('/inbox/archive')) return ok({ archived: 1 })
+        // Both loaded rows are unread; the read row sits past this page, so no loaded row is read.
+        if (url.includes('/inbox?'))
+          return ok({
+            items: [row('a', 'First'), row('b', 'Second')],
+            total: 3,
+            unread: 2,
+            next: 'older',
+            latest: null,
+          })
+        return ok({})
+      },
+    })
+    await store.start()
+    expect(await store.archiveRead()).toBe(true)
+    expect(sent.find((call) => call.url.includes('/inbox/archive'))?.body).toEqual({ read: true })
+  })
+})
+
+describe('inbox store failures', () => {
+  test('a getToken that throws shows the error, not a missing bell, and retry asks the host again', async () => {
+    let attempts = 0
+    const errors: InboxError[] = []
+    const { store } = harness({
+      getToken: async () => {
+        attempts += 1
+        if (attempts === 1) throw new Error('host backend down')
+        return 'lrt_1'
+      },
+      onError: (error) => errors.push(error),
+    })
+    await store.start()
+    expect(store.getState().status).toBe('error')
+    expect(store.getState().error).toBe(LOAD_ERROR_MESSAGE)
+    expect(errors.map((error) => [error.source, error.code])).toEqual([['token', 'TOKEN_UNAVAILABLE']])
+    await store.retry()
+    expect(store.getState().status).toBe('ready')
+  })
+
+  test('a getToken that returns null is still a signed-out visitor, not an error', async () => {
+    const { store } = harness({ getToken: async () => null })
+    await store.start()
+    expect(store.getState().status).toBe('anonymous')
+  })
+
+  test('a failed load reports the server code to onError, once', async () => {
+    const errors: InboxError[] = []
+    const { store } = harness({
+      fetch: (url) =>
+        url.includes('/inbox?') ? failure('INTERNAL_ERROR', HttpStatus.INTERNAL_SERVER_ERROR.code) : ok({}),
+      onError: (error) => errors.push(error),
+    })
+    await store.start()
+    expect(errors.map((error) => [error.source, error.code])).toEqual([['inbox', 'INTERNAL_ERROR']])
+  })
+
+  test('a network failure shows the error and reports NETWORK_ERROR', async () => {
+    const errors: InboxError[] = []
+    const { store } = harness({
+      fetch: () => {
+        throw new TypeError('fetch failed')
+      },
+      onError: (error) => errors.push(error),
+    })
+    await store.start()
+    expect(store.getState().status).toBe('error')
+    expect(errors.map((error) => error.code)).toEqual(['NETWORK_ERROR'])
+  })
+
+  test('a throwing onError does not break the store', async () => {
+    const { store } = harness({
+      fetch: (url) =>
+        url.includes('/inbox?') ? failure('INTERNAL_ERROR', HttpStatus.INTERNAL_SERVER_ERROR.code) : ok({}),
+      onError: () => {
+        throw new Error('host logger down')
+      },
+    })
+    await store.start()
+    expect(store.getState().status).toBe('error')
+  })
+
+  test('a stream outage reports once, however many retries follow, and a reconnect re-arms it', async () => {
+    const errors: InboxError[] = []
+    const { store, streams } = harness({
+      tokens: ['lrt_1', 'lrt_2', 'lrt_3', 'lrt_4', 'lrt_5'],
+      onError: (error) => errors.push(error),
+    })
+    await store.start()
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      streams[attempt]?.emit('error', { data: 'stream answered 500' })
+      await settle(40)
+    }
+    const streamErrors = () => errors.filter((error) => error.source === 'stream')
+    expect(streamErrors()).toHaveLength(1)
+    expect(streamErrors()[0]?.cause).toBe('stream answered 500')
+    streams.at(-1)?.emit('open')
+    streams.at(-1)?.emit('error')
+    await settle(40)
+    expect(streamErrors()).toHaveLength(2)
+  })
+
+  test('a failed load-more keeps the rows shown and flags it, and the next attempt clears the flag', async () => {
+    let failing = true
+    const { store } = harness({
+      fetch: (url) => {
+        if (url.includes('before=')) {
+          return failing
+            ? failure('INTERNAL_ERROR', HttpStatus.INTERNAL_SERVER_ERROR.code)
+            : ok({ items: [row('c', 'Third')], unread: 1, next: null, latest: null })
+        }
+        if (url.includes('/inbox?')) return ok({ ...page, next: 'older-1' })
+        return ok({})
+      },
+    })
+    await store.start()
+    await store.loadMore()
+    expect(store.getState().status).toBe('ready')
+    expect(store.getState().items.map((item) => item.id)).toEqual(['b', 'a'])
+    expect(store.getState().loadMoreFailed).toBe(true)
+    failing = false
+    await store.loadMore()
+    expect(store.getState().loadMoreFailed).toBe(false)
+    expect(store.getState().items.map((item) => item.id)).toEqual(['b', 'a', 'c'])
+  })
+
+  test('a failed archive load-more keeps the archived rows listed', async () => {
+    const { store } = harness({
+      fetch: (url) => {
+        if (url.includes('view=archived')) {
+          if (url.includes('before=')) return failure('INTERNAL_ERROR', HttpStatus.INTERNAL_SERVER_ERROR.code)
+          return ok({ items: [row('z', 'Old', at)], unread: 0, next: 'older', latest: null })
+        }
+        if (url.includes('/inbox?')) return ok(page)
+        return ok({})
+      },
+    })
+    await store.start()
+    await store.openArchive()
+    await store.loadMoreArchive()
+    expect(store.getState().archive.status).toBe('ready')
+    expect(store.getState().archive.items.map((item) => item.id)).toEqual(['z'])
+    expect(store.getState().archive.loadMoreFailed).toBe(true)
+  })
+
+  test('actions resolve false when the server refuses them, and true when it applies them', async () => {
+    let failing = true
+    const { store } = harness({
+      fetch: (url) => {
+        if (failing && (url.includes('/inbox/archive') || url.includes('/inbox/read')))
+          return failure('INTERNAL_ERROR', HttpStatus.INTERNAL_SERVER_ERROR.code)
+        if (url.includes('/inbox?')) return ok(page)
+        return ok({ updated: 1 })
+      },
+    })
+    await store.start()
+    expect(await store.markAllRead()).toBe(false)
+    expect(await store.archive(['b'])).toBe(false)
+    await settle(30)
+    failing = false
+    expect(await store.archive(['a'])).toBe(true)
+    expect(await store.markAllRead()).toBe(true)
+  })
+
+  test('a token outage reports once, not on every refresh, and a working token re-arms it', async () => {
+    let failing = false
+    let calls = 0
+    const errors: InboxError[] = []
+    const { store } = harness({
+      tokenRefreshMs: 5,
+      getToken: async () => {
+        calls += 1
+        if (failing) throw new Error('host backend down')
+        return 'lrt_1'
+      },
+      onError: (error) => errors.push(error),
+    })
+    await store.start()
+    const tokenErrors = () => errors.filter((error) => error.source === 'token')
+    failing = true
+    await settle(60)
+    // The refresh timer kept firing, so the single report is not just one attempt.
+    expect(calls).toBeGreaterThan(3)
+    expect(tokenErrors()).toHaveLength(1)
+    failing = false
+    await settle(20)
+    failing = true
+    await settle(20)
+    expect(tokenErrors()).toHaveLength(2)
   })
 })

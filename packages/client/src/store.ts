@@ -7,12 +7,21 @@ export type InboxStatus = 'loading' | 'ready' | 'anonymous' | 'error'
 export type InboxView = 'inbox' | 'archive'
 export type ArchiveStatus = 'idle' | 'loading' | 'ready' | 'error'
 
+// Where a failure happened: `token` is the host's getToken, `stream` the live connection.
+export type InboxErrorSource = 'token' | 'inbox' | 'archive' | 'action' | 'stream'
+
+// What the host hears about a failure. The widget shows one general message; this is for the host's own logs.
+// `code` is ApiError.code (NETWORK_ERROR, TIMEOUT or a server code), or TOKEN_UNAVAILABLE, STREAM_DOWN, UNKNOWN.
+export type InboxError = { source: InboxErrorSource; code: string; cause: unknown }
+
 // The archive is fetched only when first opened, so a bell that is never opened costs one request.
 export type ArchiveState = {
   items: InboxItem[]
   next: string | null
   status: ArchiveStatus
   loadingMore: boolean
+  // A later page failed. The rows already listed stay, and the next load-more retries.
+  loadMoreFailed: boolean
   error: string | null
 }
 
@@ -22,6 +31,8 @@ export type InboxState = {
   // Older-page cursor for the inbox; null when every older row is loaded.
   next: string | null
   loadingMore: boolean
+  // A later page failed. The rows already listed stay, and the next load-more retries.
+  loadMoreFailed: boolean
   // Every inbox row, for the header count. The badge uses `unread`.
   total: number
   unread: number
@@ -36,7 +47,10 @@ export type InboxStoreOptions = {
   baseUrl: string
   appKey: string
   // Returns the recipient token for the signed-in user, or null for an anonymous visitor.
+  // A throw is a failure, not a signed-out visitor: the widget shows the error and retries on the next start.
   getToken: () => Promise<string | null>
+  // Hears every failure, for the host's logs and metrics. The widget shows its own message either way.
+  onError?: (error: InboxError) => void
   fetchImpl?: typeof fetch
   // Opens the live stream. The default reads it over fetch, with the token in the Authorization header.
   openStream?: (url: string, token: string) => Stream
@@ -52,24 +66,32 @@ export type InboxStore = {
   start(): Promise<void>
   stop(): void
   retry(): Promise<void>
-  // Each action resolves once the server has answered, or the optimistic change has been rolled back.
-  markRead(ids: string[]): Promise<void>
-  markAllRead(): Promise<void>
+  // Each action resolves once the server has answered: true when applied, false when it failed and the change was rolled back.
+  markRead(ids: string[]): Promise<boolean>
+  markAllRead(): Promise<boolean>
   loadMore(): Promise<void>
   openArchive(): Promise<void>
   closeArchive(): void
   loadMoreArchive(): Promise<void>
-  archive(ids: string[]): Promise<void>
-  archiveRead(): Promise<void>
-  restore(ids: string[]): Promise<void>
+  archive(ids: string[]): Promise<boolean>
+  archiveRead(): Promise<boolean>
+  restore(ids: string[]): Promise<boolean>
 }
 
-const EMPTY_ARCHIVE: ArchiveState = { items: [], next: null, status: 'idle', loadingMore: false, error: null }
+const EMPTY_ARCHIVE: ArchiveState = {
+  items: [],
+  next: null,
+  status: 'idle',
+  loadingMore: false,
+  loadMoreFailed: false,
+  error: null,
+}
 const INITIAL: InboxState = {
   status: 'loading',
   items: [],
   next: null,
   loadingMore: false,
+  loadMoreFailed: false,
   total: 0,
   unread: 0,
   announced: null,
@@ -91,6 +113,8 @@ function uniqueById(items: InboxItem[]): InboxItem[] {
   })
 }
 
+const errorCode = (cause: unknown): string => (cause instanceof ApiError ? cause.code : 'UNKNOWN')
+
 export function createInboxStore(options: InboxStoreOptions): InboxStore {
   const api = createInboxApi(options)
   const openStream =
@@ -110,6 +134,10 @@ export function createInboxStore(options: InboxStoreOptions): InboxStore {
   let refreshTimer: ReturnType<typeof setTimeout> | undefined
   let retryTimer: ReturnType<typeof setTimeout> | undefined
   let retryDelay = retryMinMs
+  // Set by the first failed connection of an outage, so the host hears about it once, not once per retry.
+  let streamDown = false
+  // The same for a failed token refresh: one report per outage, until a refresh succeeds.
+  let tokenDown = false
 
   function setState(next: Partial<InboxState>) {
     state = { ...state, ...next }
@@ -120,8 +148,28 @@ export function createInboxStore(options: InboxStoreOptions): InboxStore {
     setState({ archive: { ...state.archive, ...next } })
   }
 
+  // The host hears about every failure. A throwing host callback must not break the store.
+  function report(source: InboxErrorSource, code: string, cause: unknown) {
+    try {
+      options.onError?.({ source, code, cause })
+    } catch {
+      // The widget keeps working when the host's own logger does not.
+    }
+  }
+
   // A failed refresh keeps the current token; the next request then reports its own error.
-  const nextToken = () => options.getToken().catch(() => token)
+  const nextToken = () =>
+    options.getToken().then(
+      (fresh) => {
+        tokenDown = false
+        return fresh
+      },
+      (cause: unknown) => {
+        if (!tokenDown) report('token', 'TOKEN_UNAVAILABLE', cause)
+        tokenDown = true
+        return token
+      },
+    )
 
   function closeStream() {
     stream?.close()
@@ -140,6 +188,7 @@ export function createInboxStore(options: InboxStoreOptions): InboxStore {
       status: 'anonymous',
       items: [],
       next: null,
+      loadMoreFailed: false,
       total: 0,
       unread: 0,
       announced: null,
@@ -175,12 +224,18 @@ export function createInboxStore(options: InboxStoreOptions): InboxStore {
       'open',
       guard(() => {
         retryDelay = retryMinMs
+        streamDown = false
       }),
     )
     current.addEventListener('notification', guard(receive))
     current.addEventListener(
       'error',
-      guard(() => reconnect(gen)),
+      guard((event) => {
+        // `data` carries the failure text the stream saw, when it saw one.
+        if (!streamDown) report('stream', 'STREAM_DOWN', event.data)
+        streamDown = true
+        reconnect(gen)
+      }),
     )
   }
 
@@ -230,14 +285,16 @@ export function createInboxStore(options: InboxStoreOptions): InboxStore {
         status: 'ready',
         items: page.items,
         next: page.next,
+        loadMoreFailed: false,
         total: page.total,
         unread: page.unread,
         error: null,
       })
       open(gen, token)
-    } catch {
+    } catch (cause) {
       if (gen !== generation) return
       if (token === null) return goAnonymous()
+      report('inbox', errorCode(cause), cause)
       setState({ status: 'error', error: LOAD_ERROR_MESSAGE })
     }
   }
@@ -259,8 +316,9 @@ export function createInboxStore(options: InboxStoreOptions): InboxStore {
         total: page.total,
         unread: page.unread,
       })
-    } catch {
-      // The optimistic state stands until the next load; a failed refresh is not worth a banner.
+    } catch (cause) {
+      // The optimistic state stands until the next load. Not worth a banner, but the host still hears of it.
+      report('inbox', errorCode(cause), cause)
     }
   }
 
@@ -268,19 +326,23 @@ export function createInboxStore(options: InboxStoreOptions): InboxStore {
     if (state.next === null || state.loadingMore || state.status !== 'ready') return
     const gen = generation
     const before = state.next
-    setState({ loadingMore: true })
+    setState({ loadingMore: true, loadMoreFailed: false })
     try {
       const page = await authorized((current) => api.list(current, { limit: pageSize, before }))
       if (gen !== generation) return
       setState({ items: uniqueById([...state.items, ...page.items]), next: page.next, loadingMore: false })
-    } catch {
-      if (gen === generation) setState({ loadingMore: false })
+    } catch (cause) {
+      if (gen !== generation) return
+      report('inbox', errorCode(cause), cause)
+      setState({ loadingMore: false, loadMoreFailed: true })
     }
   }
 
   async function loadArchive(gen: number, from?: string): Promise<void> {
     const isMore = from !== undefined
-    setArchive(isMore ? { loadingMore: true } : { status: 'loading', error: null })
+    setArchive(
+      isMore ? { loadingMore: true, loadMoreFailed: false } : { status: 'loading', error: null, loadMoreFailed: false },
+    )
     try {
       const page = await authorized((current) =>
         api.list(current, { limit: pageSize, view: 'archived', ...(isMore ? { before: from } : {}) }),
@@ -291,11 +353,15 @@ export function createInboxStore(options: InboxStoreOptions): InboxStore {
         next: page.next,
         status: 'ready',
         loadingMore: false,
+        loadMoreFailed: false,
         error: null,
       })
-    } catch {
+    } catch (cause) {
       if (gen !== generation) return
-      setArchive({ status: 'error', loadingMore: false, error: LOAD_ERROR_MESSAGE })
+      report('archive', errorCode(cause), cause)
+      // Only the first page can replace the list with an error. A later page keeps the rows already listed.
+      if (isMore) setArchive({ loadingMore: false, loadMoreFailed: true })
+      else setArchive({ status: 'error', loadingMore: false, error: LOAD_ERROR_MESSAGE })
     }
   }
 
@@ -320,6 +386,8 @@ export function createInboxStore(options: InboxStoreOptions): InboxStore {
   async function start() {
     stop()
     const gen = generation
+    streamDown = false
+    tokenDown = false
     // loadingMore is cleared here too: a load-more still in flight from the old generation never clears it.
     setState({
       status: 'loading',
@@ -328,24 +396,39 @@ export function createInboxStore(options: InboxStoreOptions): InboxStore {
       view: 'inbox',
       archive: EMPTY_ARCHIVE,
       loadingMore: false,
+      loadMoreFailed: false,
     })
-    token = await nextToken()
+    try {
+      token = await options.getToken()
+    } catch (cause) {
+      if (gen !== generation) return
+      // A throw is not a signed-out visitor. Show the error; "Try again" calls start, which asks the host again.
+      token = null
+      report('token', 'TOKEN_UNAVAILABLE', cause)
+      setState({ status: 'error', error: LOAD_ERROR_MESSAGE })
+      return
+    }
     if (gen !== generation) return
     if (token === null) return goAnonymous()
     await load(gen)
   }
 
   // Optimistic: the list already shows the new state. On failure the lists reload from the server.
-  function send(body: { ids: string[] } | { all: true }): Promise<void> {
+  function send(body: { ids: string[] } | { all: true }): Promise<boolean> {
     const gen = generation
-    return authorized((current) => api.markRead(current, body)).catch(() => {
-      if (gen === generation) void load(gen)
-    })
+    return authorized((current) => api.markRead(current, body)).then(
+      () => true,
+      (cause) => {
+        report('action', errorCode(cause), cause)
+        if (gen === generation) void load(gen)
+        return false
+      },
+    )
   }
 
-  function markRead(ids: string[]): Promise<void> {
+  function markRead(ids: string[]): Promise<boolean> {
     const fresh = state.items.filter((item) => item.readAt === null && ids.includes(item.id))
-    if (fresh.length === 0) return Promise.resolve()
+    if (fresh.length === 0) return Promise.resolve(true)
     const freshIds = fresh.map((item) => item.id)
     const now = new Date().toISOString()
     setState({
@@ -355,8 +438,8 @@ export function createInboxStore(options: InboxStoreOptions): InboxStore {
     return send({ ids: freshIds })
   }
 
-  function markAllRead(): Promise<void> {
-    if (state.unread === 0) return Promise.resolve()
+  function markAllRead(): Promise<boolean> {
+    if (state.unread === 0) return Promise.resolve(true)
     const now = new Date().toISOString()
     setState({ items: state.items.map((item) => ({ ...item, readAt: item.readAt ?? now })), unread: 0 })
     return send({ all: true })
@@ -380,9 +463,9 @@ export function createInboxStore(options: InboxStoreOptions): InboxStore {
   }
 
   // Moves rows from the inbox to the archive. Archiving marks them read, so the badge drops by the unread ones.
-  function archive(ids: string[]): Promise<void> {
+  function archive(ids: string[]): Promise<boolean> {
     const picked = state.items.filter((item) => ids.includes(item.id))
-    if (picked.length === 0) return Promise.resolve()
+    if (picked.length === 0) return Promise.resolve(true)
     const pickedIds = picked.map((item) => item.id)
     const now = new Date().toISOString()
     const moved = picked.map((item) => ({ ...item, readAt: item.readAt ?? now, archivedAt: now }))
@@ -395,16 +478,19 @@ export function createInboxStore(options: InboxStoreOptions): InboxStore {
     })
     const gen = generation
     return authorized((current) => api.archive(current, { ids: pickedIds })).then(
-      () => undefined,
-      () => reloadAfterFailure(gen),
+      () => true,
+      (cause) => {
+        report('action', errorCode(cause), cause)
+        reloadAfterFailure(gen)
+        return false
+      },
     )
   }
 
   // Archives every read row. The server may hold read rows beyond the loaded pages, so both lists re-read.
-  function archiveRead(): Promise<void> {
+  function archiveRead(): Promise<boolean> {
     const now = new Date().toISOString()
     const moved = state.items.filter((item) => item.readAt !== null).map((item) => ({ ...item, archivedAt: now }))
-    if (moved.length === 0) return Promise.resolve()
     const movedIds = new Set(moved.map((item) => item.id))
     setState({
       items: state.items.filter((item) => !movedIds.has(item.id)),
@@ -414,18 +500,24 @@ export function createInboxStore(options: InboxStoreOptions): InboxStore {
     const gen = generation
     return authorized((current) => api.archive(current, { read: true })).then(
       async () => {
-        if (gen !== generation) return
-        await refreshHead(gen)
-        reloadArchiveIfLoaded(gen)
+        if (gen === generation) {
+          await refreshHead(gen)
+          reloadArchiveIfLoaded(gen)
+        }
+        return true
       },
-      () => reloadAfterFailure(gen),
+      (cause) => {
+        report('action', errorCode(cause), cause)
+        reloadAfterFailure(gen)
+        return false
+      },
     )
   }
 
   // Brings archived rows back to the inbox. They are read already, so the badge does not change.
-  function restore(ids: string[]): Promise<void> {
+  function restore(ids: string[]): Promise<boolean> {
     const picked = state.archive.items.filter((item) => ids.includes(item.id))
-    if (picked.length === 0) return Promise.resolve()
+    if (picked.length === 0) return Promise.resolve(true)
     const pickedIds = picked.map((item) => item.id)
     const restored = picked.map((item) => ({ ...item, archivedAt: null }))
     setState({
@@ -435,8 +527,12 @@ export function createInboxStore(options: InboxStoreOptions): InboxStore {
     })
     const gen = generation
     return authorized((current) => api.restore(current, pickedIds)).then(
-      () => undefined,
-      () => reloadAfterFailure(gen),
+      () => true,
+      (cause) => {
+        report('action', errorCode(cause), cause)
+        reloadAfterFailure(gen)
+        return false
+      },
     )
   }
 

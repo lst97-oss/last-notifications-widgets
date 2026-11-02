@@ -12,12 +12,8 @@ import { NotificationBell } from '@lst97-oss/last-notifications-widgets/react'
   baseUrl="https://notifications.example.com"
   appKey="my-app"
   session={hostUser.id}
-  getToken={async () => {
-    const response = await fetch('/api/notifications-token')
-    if (!response.ok) throw new Error('token request failed') // an error, not a signed-out visitor
-    return (await response.json()).token
-  }}
-  onError={(error) => console.warn('[notifications]', error.source, error.code)}
+  tokenUrl="/api/notifications-token"
+  onError={(error) => console.warn('[notifications]', error.source, error.code, error.retryable)}
 />
 ```
 
@@ -89,12 +85,13 @@ await notifications.recipients.clear('user-42', ['email']) // idempotent
 - **`session` is the isolation guard.** A change stops the old store, drops its items, and refetches.
   `null` or `undefined` renders nothing.
 - **`getToken` returning `null`** means a signed-out visitor: nothing renders.
-- **`getToken` throwing** is an error, not a signed-out visitor. The bell keeps its icon, adds a warning
-  triangle, and its popup shows one general message with "Try again", which calls `getToken` again. Throw
-  on an upstream failure; return `null` only when the visitor is signed out.
-- **`onError`** hears every failure, for logs and metrics. A stream outage and a token outage are each reported
-  once, not on every retry. The bell shows its error state when it cannot start or load. A stream outage does
-  not show it, so the bell keeps its last list until the stream returns. A throwing `onError` cannot break it.
+- **A token failure** is an error, not a signed-out visitor. The bell keeps its icon, adds a warning triangle, and
+  shows one general message. A retryable failure is retried on its own (see Errors and retries), and "Try again"
+  appears only when a retry can help. Return `null` only when the visitor is signed out.
+- **`onError`** hears every failure, with `code`, `retryable` and the server's `requestId` when it sent one, for logs
+  and metrics. A stream outage and a token outage are each reported once, not on every retry. The bell shows its
+  error state when it cannot start or load. A stream outage does not show it, so the bell keeps its last list until
+  the stream returns. A throwing `onError` cannot break it.
 - **`NotificationBellUnavailable`** renders the same error bell for a host that cannot mount the live bell
   yet. It takes an `onRetry` and no token, key or URL.
 - **`getToken` must return a valid token.** Mint on each call, or cache only until shortly before the
@@ -104,6 +101,26 @@ await notifications.recipients.clear('user-42', ['email']) // idempotent
   so a rotation loses no rows.
 - **Only in-app notifications appear.** A notification published with `channels: ['email']` never
   shows in the bell.
+
+### Errors and retries
+
+The bell retries on its own, so a host does not write retry loops. One schedule covers every automatic retry:
+stream reconnects, token refreshes and failed loads. Each wait doubles from about one second up to 30 seconds, with
+jitter, and a server's `Retry-After` replaces the wait once. Retries pause while the browser is offline or the tab
+is hidden, and resume when it returns.
+
+| Failure                                                 | Retried on its own | What the bell shows       |
+| ------------------------------------------------------- | ------------------ | ------------------------- |
+| Network error, timeout, 408, 425, 429, 500, 502, 503, 504 | yes                | message and "Try again"   |
+| Other 4xx, and 501                                      | no                 | message only              |
+
+A permanent failure stops the bell's retries, so a configuration fault never loops. A failed action (mark read,
+archive, restore) never replaces the list: the rows stay, and the list reloads in the background.
+
+`tokenUrl` is the host's token endpoint. The widget calls it, applies the timeout and the retry rules above, and
+reads `{data:{token}}`; `{data:{token:null}}` means a signed-out visitor. Use `getToken` instead when the host needs its
+own call. To say a failure is permanent, throw a `TokenError` with the status the host sent (`401`, `404` or `501`
+are permanent, `503` is retried).
 
 ## Theming
 

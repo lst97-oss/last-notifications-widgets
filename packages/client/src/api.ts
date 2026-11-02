@@ -27,6 +27,8 @@ export type InboxPage = {
 
 export const TOKEN_ERROR_CODE = 'INVALID_RECIPIENT_TOKEN'
 export const LOAD_ERROR_MESSAGE = "Couldn't load notifications."
+// Shown when retrying cannot help (a configuration failure): the bell offers no "Try again".
+export const UNAVAILABLE_MESSAGE = "Notifications aren't available on this site."
 
 export type InboxListOptions = {
   limit: number

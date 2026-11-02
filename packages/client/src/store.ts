@@ -1,4 +1,12 @@
-import { ApiError, createInboxApi, type InboxItem, LOAD_ERROR_MESSAGE, TOKEN_ERROR_CODE } from './api'
+import {
+  ApiError,
+  createInboxApi,
+  type InboxItem,
+  LOAD_ERROR_MESSAGE,
+  TOKEN_ERROR_CODE,
+  UNAVAILABLE_MESSAGE,
+} from './api'
+import { createBackoff, type Failure, failureOf } from './failure'
 import { openSseStream, type Stream, type StreamEvent } from './stream'
 
 export type { Stream, StreamEvent } from './stream'
@@ -11,8 +19,15 @@ export type ArchiveStatus = 'idle' | 'loading' | 'ready' | 'error'
 export type InboxErrorSource = 'token' | 'inbox' | 'archive' | 'action' | 'stream'
 
 // What the host hears about a failure. The widget shows one general message; this is for the host's own logs.
-// `code` is ApiError.code (NETWORK_ERROR, TIMEOUT or a server code), or TOKEN_UNAVAILABLE, STREAM_DOWN, UNKNOWN.
-export type InboxError = { source: InboxErrorSource; code: string; cause: unknown }
+// `code` is the server's code (or NETWORK_ERROR and TIMEOUT), or TOKEN_UNAVAILABLE, STREAM_DOWN, UNKNOWN.
+// `retryable` is true when the widget tries again on its own; false means it has stopped and needs a fix.
+export type InboxError = {
+  source: InboxErrorSource
+  code: string
+  retryable: boolean
+  requestId?: string | undefined
+  cause: unknown
+}
 
 // The archive is fetched only when first opened, so a bell that is never opened costs one request.
 export type ArchiveState = {
@@ -39,6 +54,8 @@ export type InboxState = {
   // The latest live arrival, so the bell can announce it once.
   announced: InboxItem | null
   error: string | null
+  // False when the error will not clear on a retry, so the bell offers no "Try again".
+  retryable: boolean
   view: InboxView
   archive: ArchiveState
 }
@@ -46,8 +63,8 @@ export type InboxState = {
 export type InboxStoreOptions = {
   baseUrl: string
   appKey: string
-  // Returns the recipient token for the signed-in user, or null for an anonymous visitor.
-  // A throw is a failure, not a signed-out visitor: the widget shows the error and retries on the next start.
+  // Returns the recipient token for the signed-in user, or null for an anonymous visitor. A throw is a failure, not a
+  // signed-out visitor: the widget retries it on a backoff, unless the error says it is not retryable, which stops it.
   getToken: () => Promise<string | null>
   // Hears every failure, for the host's logs and metrics. The widget shows its own message either way.
   onError?: (error: InboxError) => void
@@ -96,12 +113,29 @@ const INITIAL: InboxState = {
   unread: 0,
   announced: null,
   error: null,
+  retryable: true,
   view: 'inbox',
   archive: EMPTY_ARCHIVE,
 }
 
 // Tokens live 15 minutes on the server, so rotate well before that.
 const DEFAULT_TOKEN_REFRESH_MS = 12 * 60_000
+
+// The browser's own signals, typed loosely so the store also runs where there is no window (tests, workers).
+type BrowserGlobals = {
+  navigator?: { onLine?: boolean }
+  document?: {
+    hidden?: boolean
+    addEventListener?: (type: string, listener: () => void) => void
+    removeEventListener?: (type: string, listener: () => void) => void
+  }
+  addEventListener?: (type: string, listener: () => void) => void
+  removeEventListener?: (type: string, listener: () => void) => void
+}
+const browser = globalThis as unknown as BrowserGlobals
+
+// Automatic retries wait while the browser is offline or the tab is hidden, then run when it can.
+const canRetryNow = () => browser.navigator?.onLine !== false && browser.document?.hidden !== true
 
 // Keeps the first occurrence of each id: a page boundary or a reconnect can deliver a row twice.
 function uniqueById(items: InboxItem[]): InboxItem[] {
@@ -113,16 +147,19 @@ function uniqueById(items: InboxItem[]): InboxItem[] {
   })
 }
 
-const errorCode = (cause: unknown): string => (cause instanceof ApiError ? cause.code : 'UNKNOWN')
+// A transient failure invites a retry; a permanent one shows that retrying cannot help.
+const messageFor = (failure: Failure) => (failure.retryable ? LOAD_ERROR_MESSAGE : UNAVAILABLE_MESSAGE)
+
+type Refresh = { token: string | null; failure: Failure | null }
 
 export function createInboxStore(options: InboxStoreOptions): InboxStore {
   const api = createInboxApi(options)
   const openStream =
     options.openStream ?? ((url: string, token: string) => openSseStream(options.fetchImpl ?? fetch, url, token))
   const tokenRefreshMs = options.tokenRefreshMs ?? DEFAULT_TOKEN_REFRESH_MS
-  const retryMinMs = options.retryMinMs ?? 1_000
-  const retryMaxMs = options.retryMaxMs ?? 30_000
   const pageSize = options.pageSize ?? 20
+  // One schedule for every automatic retry: a stream reconnect, a token refresh and a failed load all wait on it.
+  const backoff = createBackoff({ minMs: options.retryMinMs ?? 1_000, maxMs: options.retryMaxMs ?? 30_000 })
   const listeners = new Set<() => void>()
 
   let state: InboxState = INITIAL
@@ -133,11 +170,14 @@ export function createInboxStore(options: InboxStoreOptions): InboxStore {
   let stream: Stream | null = null
   let refreshTimer: ReturnType<typeof setTimeout> | undefined
   let retryTimer: ReturnType<typeof setTimeout> | undefined
-  let retryDelay = retryMinMs
-  // Set by the first failed connection of an outage, so the host hears about it once, not once per retry.
+  // A retry that came due while the browser was offline or hidden; it runs when the browser can.
+  let waiting: (() => void) | null = null
+  // The refresh in flight, shared by every caller that needs a new token at the same time.
+  let refreshing: Promise<Refresh> | null = null
+  // Each is set by the first failure of an outage, so the host hears about it once, not once per retry.
   let streamDown = false
-  // The same for a failed token refresh: one report per outage, until a refresh succeeds.
   let tokenDown = false
+  let inboxDown = false
 
   function setState(next: Partial<InboxState>) {
     state = { ...state, ...next }
@@ -149,27 +189,54 @@ export function createInboxStore(options: InboxStoreOptions): InboxStore {
   }
 
   // The host hears about every failure. A throwing host callback must not break the store.
-  function report(source: InboxErrorSource, code: string, cause: unknown) {
+  function report(source: InboxErrorSource, failure: Failure, cause: unknown) {
     try {
-      options.onError?.({ source, code, cause })
+      options.onError?.({
+        source,
+        code: failure.code,
+        retryable: failure.retryable,
+        requestId: failure.requestId,
+        cause,
+      })
     } catch {
       // The widget keeps working when the host's own logger does not.
     }
   }
 
-  // A failed refresh keeps the current token; the next request then reports its own error.
-  const nextToken = () =>
-    options.getToken().then(
-      (fresh) => {
-        tokenDown = false
-        return fresh
-      },
-      (cause: unknown) => {
-        if (!tokenDown) report('token', 'TOKEN_UNAVAILABLE', cause)
-        tokenDown = true
-        return token
-      },
-    )
+  function fail(source: InboxErrorSource, cause: unknown) {
+    report(source, failureOf(cause, 'UNKNOWN'), cause)
+  }
+
+  // The only place automatic retries are scheduled. The latest schedule wins, so retries never stack.
+  function scheduleRetry(gen: number, run: (gen: number) => unknown, hintMs?: number) {
+    clearTimeout(retryTimer)
+    retryTimer = setTimeout(() => {
+      retryTimer = undefined
+      const attempt = () => {
+        void run(gen)
+      }
+      if (canRetryNow()) attempt()
+      else waiting = attempt
+    }, backoff.next(hintMs))
+  }
+
+  // The browser came back online, or the tab became visible: run the retry that was waiting for it.
+  function resume() {
+    if (waiting === null || !canRetryNow()) return
+    const run = waiting
+    waiting = null
+    run()
+  }
+
+  function attachResume() {
+    browser.addEventListener?.('online', resume)
+    browser.document?.addEventListener?.('visibilitychange', resume)
+  }
+
+  function detachResume() {
+    browser.removeEventListener?.('online', resume)
+    browser.document?.removeEventListener?.('visibilitychange', resume)
+  }
 
   function closeStream() {
     stream?.close()
@@ -179,6 +246,8 @@ export function createInboxStore(options: InboxStoreOptions): InboxStore {
   function cancelTimers() {
     clearTimeout(refreshTimer)
     clearTimeout(retryTimer)
+    retryTimer = undefined
+    waiting = null
   }
 
   function goAnonymous() {
@@ -197,6 +266,36 @@ export function createInboxStore(options: InboxStoreOptions): InboxStore {
     })
   }
 
+  // A permanent token failure: no more retries, and the bell says so without offering one.
+  function halt() {
+    closeStream()
+    cancelTimers()
+    setState({ status: 'error', error: UNAVAILABLE_MESSAGE, retryable: false })
+  }
+
+  // One refresh at a time: callers that all need a new token at once share a single getToken call.
+  function refreshToken(): Promise<Refresh> {
+    refreshing ??= Promise.resolve()
+      .then(() => options.getToken())
+      .then(
+        (fresh): Refresh => {
+          tokenDown = false
+          return { token: fresh, failure: null }
+        },
+        (cause: unknown): Refresh => {
+          const failure = failureOf(cause, 'TOKEN_UNAVAILABLE')
+          if (!tokenDown) report('token', failure, cause)
+          tokenDown = true
+          // The current token stays in use; the caller decides what a failed refresh means.
+          return { token, failure }
+        },
+      )
+      .finally(() => {
+        refreshing = null
+      })
+    return refreshing
+  }
+
   // Runs one request with the current token; an expired token is replaced once and the request retried.
   async function authorized<T>(run: (current: string) => Promise<T>): Promise<T> {
     if (token === null) throw new Error('not signed in')
@@ -204,13 +303,13 @@ export function createInboxStore(options: InboxStoreOptions): InboxStore {
       return await run(token)
     } catch (error) {
       if (!(error instanceof ApiError) || error.code !== TOKEN_ERROR_CODE) throw error
-      token = await nextToken()
+      token = (await refreshToken()).token
       if (token === null) throw error
       return run(token)
     }
   }
 
-  // Opens the live stream from the cursor. Errors close it and reconnect with backoff.
+  // Opens the live stream from the cursor. Errors close it and reconnect on the shared schedule.
   function open(gen: number, live: string) {
     closeStream()
     clearTimeout(refreshTimer)
@@ -223,7 +322,7 @@ export function createInboxStore(options: InboxStoreOptions): InboxStore {
     current.addEventListener(
       'open',
       guard(() => {
-        retryDelay = retryMinMs
+        backoff.reset()
         streamDown = false
       }),
     )
@@ -232,28 +331,36 @@ export function createInboxStore(options: InboxStoreOptions): InboxStore {
       'error',
       guard((event) => {
         // `data` carries the failure text the stream saw, when it saw one.
-        if (!streamDown) report('stream', 'STREAM_DOWN', event.data)
+        if (!streamDown) report('stream', { code: 'STREAM_DOWN', retryable: true }, event.data)
         streamDown = true
         reconnect(gen)
       }),
     )
   }
 
-  // A fresh token reopens the stream from the same cursor, so no row is skipped.
+  // Replaces the token before it expires. A retryable failure keeps the stream on the current token and tries again on
+  // the schedule; a permanent one stops the bell. A fresh token reopens the stream from the same cursor, so no row is skipped.
   async function rotate(gen: number) {
-    const fresh = await nextToken()
+    const refresh = await refreshToken()
     if (gen !== generation) return
-    if (fresh === null) return goAnonymous()
-    token = fresh
-    open(gen, fresh)
+    if (refresh.failure) {
+      if (!refresh.failure.retryable) {
+        halt()
+        return
+      }
+      if (stream === null && token !== null) open(gen, token)
+      scheduleRetry(gen, rotate, refresh.failure.retryAfterMs)
+      return
+    }
+    if (refresh.token === null) return goAnonymous()
+    token = refresh.token
+    backoff.reset()
+    open(gen, token)
   }
 
   function reconnect(gen: number) {
     closeStream()
-    clearTimeout(retryTimer)
-    // Random spread: tabs that lost the stream together must not all retry in the same instant.
-    retryTimer = setTimeout(() => void rotate(gen), retryDelay * (0.5 + Math.random()))
-    retryDelay = Math.min(retryDelay * 2, retryMaxMs)
+    scheduleRetry(gen, rotate)
   }
 
   // Live arrivals go to the inbox only; the archive is fetched on demand and never streamed.
@@ -275,12 +382,37 @@ export function createInboxStore(options: InboxStoreOptions): InboxStore {
     })
   }
 
-  async function load(gen: number) {
+  // The token step of a session. A failure is shown and retried quietly: the error stays on screen until a try works.
+  async function attempt(gen: number): Promise<void> {
+    let fresh: string | null
+    try {
+      fresh = await options.getToken()
+    } catch (cause) {
+      if (gen !== generation) return
+      // A throw is not a signed-out visitor.
+      token = null
+      const failure = failureOf(cause, 'TOKEN_UNAVAILABLE')
+      if (!tokenDown) report('token', failure, cause)
+      tokenDown = true
+      setState({ status: 'error', error: messageFor(failure), retryable: failure.retryable })
+      if (failure.retryable) scheduleRetry(gen, attempt, failure.retryAfterMs)
+      return
+    }
+    if (gen !== generation) return
+    tokenDown = false
+    token = fresh
+    if (token === null) return goAnonymous()
+    await load(gen)
+  }
+
+  async function load(gen: number): Promise<void> {
     try {
       const page = await authorized((current) => api.list(current, { limit: pageSize }))
       if (gen !== generation) return
       if (token === null) return goAnonymous()
       cursor = page.latest
+      inboxDown = false
+      backoff.reset()
       setState({
         status: 'ready',
         items: page.items,
@@ -289,13 +421,20 @@ export function createInboxStore(options: InboxStoreOptions): InboxStore {
         total: page.total,
         unread: page.unread,
         error: null,
+        retryable: true,
       })
       open(gen, token)
     } catch (cause) {
       if (gen !== generation) return
       if (token === null) return goAnonymous()
-      report('inbox', errorCode(cause), cause)
-      setState({ status: 'error', error: LOAD_ERROR_MESSAGE })
+      const failure = failureOf(cause, 'UNKNOWN')
+      if (!inboxDown) report('inbox', failure, cause)
+      inboxDown = true
+      // A list already on screen stays while a reconcile fails; the error replaces only an empty bell.
+      if (state.status !== 'ready') {
+        setState({ status: 'error', error: messageFor(failure), retryable: failure.retryable })
+      }
+      if (failure.retryable) scheduleRetry(gen, load, failure.retryAfterMs)
     }
   }
 
@@ -317,8 +456,10 @@ export function createInboxStore(options: InboxStoreOptions): InboxStore {
         unread: page.unread,
       })
     } catch (cause) {
-      // The optimistic state stands until the next load. Not worth a banner, but the host still hears of it.
-      report('inbox', errorCode(cause), cause)
+      // The optimistic state stands until a reconcile works. Not worth a banner, but the host still hears of it.
+      const failure = failureOf(cause, 'UNKNOWN')
+      report('inbox', failure, cause)
+      if (gen === generation && failure.retryable) scheduleRetry(gen, load, failure.retryAfterMs)
     }
   }
 
@@ -333,7 +474,7 @@ export function createInboxStore(options: InboxStoreOptions): InboxStore {
       setState({ items: uniqueById([...state.items, ...page.items]), next: page.next, loadingMore: false })
     } catch (cause) {
       if (gen !== generation) return
-      report('inbox', errorCode(cause), cause)
+      fail('inbox', cause)
       setState({ loadingMore: false, loadMoreFailed: true })
     }
   }
@@ -358,7 +499,7 @@ export function createInboxStore(options: InboxStoreOptions): InboxStore {
       })
     } catch (cause) {
       if (gen !== generation) return
-      report('archive', errorCode(cause), cause)
+      fail('archive', cause)
       // Only the first page can replace the list with an error. A later page keeps the rows already listed.
       if (isMore) setArchive({ loadingMore: false, loadMoreFailed: true })
       else setArchive({ status: 'error', loadingMore: false, error: LOAD_ERROR_MESSAGE })
@@ -381,36 +522,29 @@ export function createInboxStore(options: InboxStoreOptions): InboxStore {
     generation += 1
     closeStream()
     cancelTimers()
+    detachResume()
   }
 
   async function start() {
     stop()
     const gen = generation
+    attachResume()
     streamDown = false
     tokenDown = false
+    inboxDown = false
+    backoff.reset()
     // loadingMore is cleared here too: a load-more still in flight from the old generation never clears it.
     setState({
       status: 'loading',
       error: null,
+      retryable: true,
       announced: null,
       view: 'inbox',
       archive: EMPTY_ARCHIVE,
       loadingMore: false,
       loadMoreFailed: false,
     })
-    try {
-      token = await options.getToken()
-    } catch (cause) {
-      if (gen !== generation) return
-      // A throw is not a signed-out visitor. Show the error; "Try again" calls start, which asks the host again.
-      token = null
-      report('token', 'TOKEN_UNAVAILABLE', cause)
-      setState({ status: 'error', error: LOAD_ERROR_MESSAGE })
-      return
-    }
-    if (gen !== generation) return
-    if (token === null) return goAnonymous()
-    await load(gen)
+    await attempt(gen)
   }
 
   // Optimistic: the list already shows the new state. On failure the lists reload from the server.
@@ -419,7 +553,7 @@ export function createInboxStore(options: InboxStoreOptions): InboxStore {
     return authorized((current) => api.markRead(current, body)).then(
       () => true,
       (cause) => {
-        report('action', errorCode(cause), cause)
+        fail('action', cause)
         if (gen === generation) void load(gen)
         return false
       },
@@ -480,7 +614,7 @@ export function createInboxStore(options: InboxStoreOptions): InboxStore {
     return authorized((current) => api.archive(current, { ids: pickedIds })).then(
       () => true,
       (cause) => {
-        report('action', errorCode(cause), cause)
+        fail('action', cause)
         reloadAfterFailure(gen)
         return false
       },
@@ -507,7 +641,7 @@ export function createInboxStore(options: InboxStoreOptions): InboxStore {
         return true
       },
       (cause) => {
-        report('action', errorCode(cause), cause)
+        fail('action', cause)
         reloadAfterFailure(gen)
         return false
       },
@@ -529,7 +663,7 @@ export function createInboxStore(options: InboxStoreOptions): InboxStore {
     return authorized((current) => api.restore(current, pickedIds)).then(
       () => true,
       (cause) => {
-        report('action', errorCode(cause), cause)
+        fail('action', cause)
         reloadAfterFailure(gen)
         return false
       },

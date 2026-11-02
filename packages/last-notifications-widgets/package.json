@@ -3,6 +3,15 @@
   "version": "0.1.0",
   "description": "Notification bell widget for last-notifications: framework-free client plus React component and theme.",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/lst97-oss/last-notifications-widgets.git",
+    "directory": "packages/last-notifications-widgets"
+  },
+  "homepage": "https://github.com/lst97-oss/last-notifications-widgets#readme",
+  "bugs": {
+    "url": "https://github.com/lst97-oss/last-notifications-widgets/issues"
+  },
   "type": "module",
   "sideEffects": [
     "*.css"

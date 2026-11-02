@@ -39,7 +39,9 @@ export function NotificationList({
 
   if (state.status === 'loading') return <NotificationSkeletons />
   if (state.status === 'error') {
-    return <NotificationError message={state.error ?? ''} onRetry={() => void store.retry()} />
+    return (
+      <NotificationError message={state.error ?? ''} retryable={state.retryable} onRetry={() => void store.retry()} />
+    )
   }
   if (state.items.length === 0) {
     return (

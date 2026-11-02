@@ -1,4 +1,4 @@
-import type { InboxItem } from '@last-notifications-widgets/client'
+import { createTokenProvider, type InboxItem } from '@last-notifications-widgets/client'
 import { lazy, Suspense, useState } from 'react'
 
 import { Popover, PopoverContent } from '@/ui/popover'
@@ -19,10 +19,13 @@ const NotificationArchive = lazy(() => import('./NotificationArchive'))
 // fresh store and a change drops the previous user's list.
 export function NotificationBell(props: NotificationBellProps) {
   if (props.session == null) return null
-  return <InboxBell key={JSON.stringify([props.baseUrl, props.appKey, props.session])} {...props} />
+  return <InboxBell key={JSON.stringify([props.baseUrl, props.appKey, props.session, props.tokenUrl])} {...props} />
 }
 
-function InboxBell({ baseUrl, appKey, getToken, onError, theme, themeVars, className }: NotificationBellProps) {
+function InboxBell({ baseUrl, appKey, onError, theme, themeVars, className, ...source }: NotificationBellProps) {
+  // A host's getToken wins; otherwise the widget calls the host's token endpoint itself. The store reads the latest
+  // function through a ref, so building the provider on each render is harmless.
+  const getToken = source.getToken ?? createTokenProvider({ url: source.tokenUrl ?? '' })
   const { store, state } = useInbox({ baseUrl, appKey, getToken, onError })
   // A message from an action ("Archived 3 notifications"). It is tied to the newest live arrival at the time it
   // was set, so a later arrival is announced instead of the stale message.

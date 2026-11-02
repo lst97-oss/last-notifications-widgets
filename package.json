@@ -19,7 +19,7 @@
   ],
   "scripts": {
     "build": "bun run build:client && bun run -F @last-notifications-widgets/react build && bun scripts/assemble-package.ts",
-    "typecheck": "bun check --no-script && bun run build:client && bun run -F @last-notifications-widgets/react typecheck",
+    "typecheck": "bun run build:client && bun run -F @last-notifications-widgets/react build && bun check --no-script && bun run -F @last-notifications-widgets/react typecheck",
     "lint": "biome check --error-on-warnings .",
     "lint:fix": "biome check --error-on-warnings --write .",
     "format": "bun fmt",

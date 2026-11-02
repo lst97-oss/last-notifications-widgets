@@ -4,6 +4,15 @@ A notification bell for sites that use last-notifications, the notifications ser
 user's in-app notifications: an unread badge, a popover list, mark read, mark all read, click-through
 via `data.url`, and live arrivals over the server's stream.
 
+## Install
+
+```sh
+bun add @lst97-oss/last-notifications-widgets
+# or: npm install @lst97-oss/last-notifications-widgets
+```
+
+React is an optional peer: the `/react` entry needs React 19, while `/client` and `/server` do not.
+
 ```tsx
 import '@lst97-oss/last-notifications-widgets/styles.css'
 import { NotificationBell } from '@lst97-oss/last-notifications-widgets/react'

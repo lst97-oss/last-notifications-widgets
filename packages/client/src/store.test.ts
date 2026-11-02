@@ -1,8 +1,9 @@
 import { afterEach, describe, expect, test } from 'bun:test'
 import { HttpStatus } from '@lst97-oss/last-httprism'
 
-import { type InboxItem, type InboxPage, LOAD_ERROR_MESSAGE } from './api'
+import { type InboxItem, type InboxPage, LOAD_ERROR_MESSAGE, UNAVAILABLE_MESSAGE } from './api'
 import { createInboxStore, type InboxError, type InboxStore, type Stream, type StreamEvent } from './store'
+import { TokenError } from './token'
 
 const at = '2026-10-29T10:00:00.000Z'
 const row = (id: string, title: string, readAt: string | null = null): InboxItem => ({
@@ -326,7 +327,8 @@ describe('inbox store', () => {
     failingLists = true
     await store.markRead(['b'])
     await settle()
-    expect(store.getState().status).toBe('error')
+    // A failed reconcile keeps the list on screen; the error replaces only an empty bell.
+    expect(store.getState().status).toBe('ready')
     failingLists = false
     await store.retry()
     releaseFirst(ok({ items: [row('x', 'Stale')], unread: 1, next: null, latest: null }))
@@ -652,10 +654,123 @@ describe('inbox store failures', () => {
     // The refresh timer kept firing, so the single report is not just one attempt.
     expect(calls).toBeGreaterThan(3)
     expect(tokenErrors()).toHaveLength(1)
+    // The retry backs off while the outage lasts, so the recovery window must outlast the longest wait (30 ms here).
     failing = false
-    await settle(20)
+    await settle(60)
     failing = true
     await settle(20)
     expect(tokenErrors()).toHaveLength(2)
+  })
+})
+
+describe('inbox store recovery', () => {
+  test('a token that fails at start is retried on its own, and the bell recovers without a click', async () => {
+    let calls = 0
+    const errors: InboxError[] = []
+    const { store } = harness({
+      getToken: async () => {
+        calls += 1
+        if (calls === 1) throw new Error('host backend down')
+        return 'lrt_1'
+      },
+      onError: (error) => errors.push(error),
+    })
+    await store.start()
+    expect(store.getState()).toMatchObject({ status: 'error', retryable: true })
+    await settle(60)
+    expect(store.getState().status).toBe('ready')
+    expect(errors.map((error) => [error.source, error.retryable])).toEqual([['token', true]])
+  })
+
+  test('a permanent token failure stops retrying, says so, and offers no retry', async () => {
+    let calls = 0
+    const { store } = harness({
+      getToken: async () => {
+        calls += 1
+        throw new TokenError('NOTIFICATIONS_NOT_CONFIGURED', 'not set up', 501)
+      },
+    })
+    await store.start()
+    await settle(60)
+    expect(calls).toBe(1)
+    expect(store.getState()).toMatchObject({ status: 'error', retryable: false, error: UNAVAILABLE_MESSAGE })
+  })
+
+  test('a permanent refresh failure closes the stream and stops the bell', async () => {
+    let calls = 0
+    const { store, streams } = harness({
+      tokenRefreshMs: 5,
+      getToken: async () => {
+        calls += 1
+        if (calls === 1) return 'lrt_1'
+        throw new TokenError('NOTIFICATIONS_NOT_CONFIGURED', 'not set up', 501)
+      },
+    })
+    await store.start()
+    await settle(40)
+    const seen = calls
+    await settle(40)
+    expect(calls).toBe(seen)
+    expect(store.getState()).toMatchObject({ status: 'error', retryable: false })
+    expect(streams.at(-1)?.closed).toBe(true)
+  })
+
+  test('callers that find the token expired at the same moment share one refresh', async () => {
+    let expired = false
+    let calls = 0
+    const { store } = harness({
+      getToken: async () => {
+        calls += 1
+        if (calls === 1) return 'lrt_1'
+        // Slow enough that both expired calls join the same refresh.
+        await settle(5)
+        expired = false
+        return 'lrt_2'
+      },
+      fetch: (url) => {
+        if (expired && (url.includes('/inbox/archive') || url.includes('/inbox/read'))) {
+          return failure('INVALID_RECIPIENT_TOKEN', HttpStatus.UNAUTHORIZED.code)
+        }
+        if (url.includes('/inbox?')) return ok(page)
+        return ok({ updated: 1 })
+      },
+    })
+    await store.start()
+    expired = true
+    expect(await Promise.all([store.archive(['b']), store.markAllRead()])).toEqual([true, true])
+    expect(calls).toBe(2)
+  })
+
+  test('a retry waits while the browser is offline and runs when it comes back online', async () => {
+    const realNavigator = Object.getOwnPropertyDescriptor(globalThis, 'navigator')
+    let online = false
+    Object.defineProperty(globalThis, 'navigator', {
+      configurable: true,
+      value: {
+        get onLine() {
+          return online
+        },
+      },
+    })
+    try {
+      let calls = 0
+      const { store } = harness({
+        getToken: async () => {
+          calls += 1
+          if (calls === 1) throw new Error('host backend down')
+          return 'lrt_1'
+        },
+      })
+      await store.start()
+      await settle(60)
+      expect(calls).toBe(1)
+      expect(store.getState().status).toBe('error')
+      online = true
+      globalThis.dispatchEvent(new Event('online'))
+      await settle(20)
+      expect(store.getState().status).toBe('ready')
+    } finally {
+      if (realNavigator) Object.defineProperty(globalThis, 'navigator', realNavigator)
+    }
   })
 })

@@ -75,6 +75,8 @@ export type NotificationsClientOptions = {
   apiKey: string
   fetchImpl?: FetchLike
   timeoutMs?: number
+  // Sent as x-request-id on every call, so the host's log and the server's log share one id.
+  requestId?: string
 }
 
 export type NotificationsClient = {
@@ -123,6 +125,7 @@ export function createNotificationsClient(options: NotificationsClientOptions): 
       headers: {
         authorization: `Bearer ${options.apiKey}`,
         ...(body === undefined ? {} : { 'content-type': 'application/json' }),
+        ...(options.requestId ? { 'x-request-id': options.requestId } : {}),
       },
       body: body === undefined ? undefined : JSON.stringify(body),
       signal: AbortSignal.timeout(timeoutMs),

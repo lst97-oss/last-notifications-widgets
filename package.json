@@ -3,6 +3,14 @@
   "version": "0.1.0",
   "private": true,
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/lst97-oss/last-notifications-widgets.git"
+  },
+  "homepage": "https://github.com/lst97-oss/last-notifications-widgets#readme",
+  "bugs": {
+    "url": "https://github.com/lst97-oss/last-notifications-widgets/issues"
+  },
   "type": "module",
   "packageManager": "bun@1.4.4",
   "workspaces": [

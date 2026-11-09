@@ -40,13 +40,13 @@ export function NotificationItem({
   const rowBody =
     'flex min-w-0 flex-1 items-start gap-2 rounded-lg px-3 py-2.5 text-start outline-none focus-visible:ring-3 focus-visible:ring-ring/50 pointer-coarse:py-3'
 
-  const handleOpen = (event: React.MouseEvent<HTMLAnchorElement>) => {
+  const handleOpen = (event: React.MouseEvent<HTMLAnchorElement>, href: string) => {
     if (!onOpen) return
     // Modified clicks (new tab, new window) keep the browser's behaviour.
     if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey) return
     event.preventDefault()
     const timeout = new Promise<void>((resolve) => setTimeout(resolve, OPEN_WAIT_MS))
-    void Promise.race([onOpen(), timeout]).finally(() => window.location.assign(href ?? '/'))
+    void Promise.race([onOpen(), timeout]).finally(() => window.location.assign(href))
   }
 
   return (
@@ -57,7 +57,7 @@ export function NotificationItem({
       )}
     >
       {href ? (
-        <a className={rowBody} href={href} onClick={handleOpen}>
+        <a className={rowBody} href={href} onClick={(event) => handleOpen(event, href)}>
           {content}
         </a>
       ) : onOpen ? (

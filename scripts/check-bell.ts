@@ -4,7 +4,20 @@ import { HttpStatus } from '@lst97-oss/last-httprism'
 import { chromium, type Page } from 'playwright-core'
 
 const ROOT = `${import.meta.dir}/..`
-const BUNDLE_DIR = `${ROOT}/.tmp/bell`
+// One run per framework: `bun scripts/check-bell.ts vue`. Each run bundles its own fixture and serves its own sheet,
+// so the scenarios below run unchanged against every port.
+const framework = process.argv[2] ?? 'react'
+const FIXTURES: Record<string, string> = {
+  react: `${ROOT}/scripts/fixtures/bell-page.tsx`,
+  vue: `${ROOT}/packages/vue/test/bell-page.ts`,
+  vanilla: `${ROOT}/packages/vanilla/test/bell-page.ts`,
+  angular: `${ROOT}/packages/angular/test/bell-page.ts`,
+}
+const fixture = FIXTURES[framework]
+if (!fixture) throw new Error(`unknown framework "${framework}", expected one of ${Object.keys(FIXTURES).join(', ')}`)
+const BUNDLE_DIR = `${ROOT}/.tmp/bell/${framework}`
+const STYLES = `${ROOT}/packages/${framework}/dist/styles.css`
+console.log(`bell browser check: ${framework}`)
 const failures: string[] = []
 const check = (label: string, ok: boolean, detail = '') => {
   console.log(`${ok ? 'PASS' : 'FAIL'} ${label}${detail ? ` — ${detail}` : ''}`)
@@ -17,15 +30,19 @@ const built = Bun.spawn(
   [
     'bunx',
     'tsup',
-    `${ROOT}/scripts/fixtures/bell-page.tsx`,
+    fixture,
     '--format',
     'iife',
     '--platform',
     'browser',
     '--no-dts',
+    // Vue and React read process.env.NODE_ENV; a browser bundle has no process, so set it at build time.
+    '--env.NODE_ENV',
+    'production',
     '--out-dir',
     BUNDLE_DIR,
   ],
+  // The bundler comes from the React package, which pins tsup; the fixture's own imports resolve from its folder.
   { cwd: `${ROOT}/packages/react`, stdout: 'pipe', stderr: 'pipe' },
 )
 if ((await built.exited) !== 0) {
@@ -128,7 +145,7 @@ const CORS = {
 }
 
 async function handle(request: Request): Promise<Response> {
-  if (request.method === 'OPTIONS') return new Response(null, { status: 204, headers: CORS })
+  if (request.method === 'OPTIONS') return new Response(null, { status: HttpStatus.NO_CONTENT.code, headers: CORS })
   const response = await route(request)
   for (const [name, value] of Object.entries(CORS)) response.headers.set(name, value)
   return response
@@ -142,7 +159,7 @@ const route = async (request: Request): Promise<Response> => {
       headers: { 'content-type': 'text/javascript' },
     })
   if (url.pathname === '/styles.css') {
-    return new Response(Bun.file(`${ROOT}/packages/react/dist/styles.css`), {
+    return new Response(Bun.file(STYLES), {
       headers: { 'content-type': 'text/css' },
     })
   }
@@ -469,6 +486,42 @@ try {
   check('archive all read is on when read rows sit past the first page', !(await archiveRead.isDisabled()))
   await menu.close()
 
+  // The host switches user while "Archive all read" is still waiting on the server. The late answer must not bring
+  // the old user's bell back, nor announce its message into the new user's session.
+  const switching = await browser.newPage()
+  let archiveHeld = 0
+  let releaseArchive!: () => void
+  const archiveGate = new Promise<void>((resolve) => {
+    releaseArchive = resolve
+  })
+  await switching.route(/\/inbox\/archive/, async (route) => {
+    archiveHeld += 1
+    await archiveGate
+    await route.continue()
+  })
+  await switching.goto(`${base}/?api=${encodeURIComponent(apiBase)}&session=user-d`)
+  await switching.locator('.ln-badge').waitFor()
+  await switching.locator('.ln-trigger').click()
+  await switching.locator('.ln-popup').waitFor()
+  await switching.getByRole('button', { name: 'More actions' }).click()
+  await switching.getByRole('menuitem', { name: 'Archive all read' }).click()
+  await until(() => archiveHeld === 1)
+  await switching.evaluate(
+    (next) => (window as unknown as { __setSession: (session: string) => void }).__setSession(next),
+    'user-b',
+  )
+  await switching.waitForFunction(() => document.querySelector('.ln-badge')?.textContent === '2')
+  const archivedBeforeRelease = archives.length
+  releaseArchive()
+  await until(() => archives.length > archivedBeforeRelease)
+  await Bun.sleep(300)
+  check('a late answer does not bring the old bell back', (await switching.locator('.ln-bell').count()) === 1)
+  const badges = (await switching.locator('.ln-badge').allTextContents()).join(' ')
+  check('the bell shows only the new user’s count', badges === '2', badges)
+  const live = (await switching.locator('[role="status"]').allTextContents()).join(' | ')
+  check('a late answer is not announced into the new session', !live.includes('Archived read notifications'), live)
+  await switching.close()
+
   // Paging: 25 unread items show 20, "Load more" adds the rest with no repeats.
   const paging = await browser.newPage()
   await paging.goto(`${base}/?api=${encodeURIComponent(apiBase)}&session=user-c`)
@@ -516,6 +569,87 @@ try {
     loadedByScroll && (await scrolling.locator('.ln-item').count()) === 25,
   )
   await scrolling.close()
+
+  // An open list keeps its place. Loading the next page, and a live arrival, must not jump it back to the top.
+  const place = await browser.newPage()
+  const streamsBeforePlace = openedStreamUrls.length
+  await place.goto(`${base}/?api=${encodeURIComponent(apiBase)}&session=user-c`)
+  await place.locator('.ln-badge').waitFor()
+  await until(() => openedStreamUrls.length > streamsBeforePlace)
+  await place.locator('.ln-trigger').click()
+  await place.locator('.ln-popup').waitFor()
+  await place.locator('.ln-item').nth(19).waitFor()
+  const scrolledTo = await place
+    .locator('.ln-item')
+    .nth(19)
+    .evaluate((row) => {
+      const scroller = row.closest('.overflow-y-auto')
+      if (!scroller) return -1
+      scroller.scrollTop = scroller.scrollHeight
+      return scroller.scrollTop
+    })
+  await place.locator('.ln-item').nth(24).waitFor()
+  await Bun.sleep(300)
+  const scrollOf = () => place.evaluate(() => document.querySelector('.ln-popup .overflow-y-auto')?.scrollTop ?? -1)
+  const afterPage = await scrollOf()
+  check(
+    'loading the next page keeps the scroll position',
+    scrolledTo > 0 && Math.abs(afterPage - scrolledTo) <= 2,
+    `${scrolledTo} -> ${afterPage}`,
+  )
+  await fetch(`${apiBase}/__push`, {
+    method: 'POST',
+    body: JSON.stringify({ token: 'lrt_c', cursor: 'cur-place', notification: item('place1', 'Placed') }),
+  })
+  await place.waitForFunction(
+    () =>
+      [...document.querySelectorAll('[role="status"]')].some((el) =>
+        el.textContent?.includes('New notification: Placed'),
+      ),
+    undefined,
+    { timeout: 5_000 },
+  )
+  await Bun.sleep(300)
+  const afterArrival = await scrollOf()
+  // A new row above the view moves the list down by one row, so the position may grow; it must never go back up.
+  check(
+    'a live arrival does not jump the list up',
+    scrolledTo > 0 && afterArrival >= scrolledTo - 2,
+    `${scrolledTo} -> ${afterArrival}`,
+  )
+  await place.close()
+
+  // A page that fails while the end of the list is still on screen is asked for once, not again by the bell itself.
+  // Only "Try again" asks again. The first page is cut to three rows, so the end is on screen straight away.
+  const loop = await browser.newPage()
+  let pageTwoRequests = 0
+  await loop.route(/\/inbox\?/, async (route) => {
+    if (!route.request().url().includes('before=')) {
+      const real = await route.fetch()
+      const json = (await real.json()) as { data: { items: unknown[]; next: string | null } }
+      json.data.items = json.data.items.slice(0, 3)
+      json.data.next = 'c3'
+      return route.fulfill({ response: real, json })
+    }
+    pageTwoRequests += 1
+    return route.fulfill({
+      status: HttpStatus.SERVICE_UNAVAILABLE.code,
+      headers: { ...CORS, 'content-type': 'application/json' },
+      body: JSON.stringify({ error: { code: 'INTERNAL_ERROR', message: 'Something went wrong. Please try again.' } }),
+    })
+  })
+  await loop.goto(`${base}/?api=${encodeURIComponent(apiBase)}&session=user-c`)
+  await loop.locator('.ln-badge').waitFor()
+  await loop.locator('.ln-trigger').click()
+  await loop.locator('.ln-popup').waitFor()
+  await loop.getByRole('button', { name: "Couldn't load more" }).waitFor()
+  await Bun.sleep(1_500)
+  check('a failed page is not asked for again by itself', pageTwoRequests <= 2, `${pageTwoRequests} requests`)
+  const askedBeforeRetry = pageTwoRequests
+  await loop.getByRole('button', { name: "Couldn't load more" }).click()
+  await until(() => pageTwoRequests > askedBeforeRetry)
+  check('Try again asks for the page again', pageTwoRequests > askedBeforeRetry)
+  await loop.close()
 
   // Small screens: the popup fits the viewport and the actions are touch-sized.
   const mobile = await browser.newContext({

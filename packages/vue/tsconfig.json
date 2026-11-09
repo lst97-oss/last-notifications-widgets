@@ -1,0 +1,12 @@
+{
+  "extends": "../../tsconfig.json",
+  "compilerOptions": {
+    "moduleResolution": "bundler",
+    "jsx": "preserve",
+    "types": ["bun-types"],
+    "strict": true,
+    "noEmit": true,
+    "allowImportingTsExtensions": false
+  },
+  "include": ["src", "vite.config.ts"]
+}

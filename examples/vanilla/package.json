@@ -1,0 +1,15 @@
+{
+  "name": "vanilla-demo",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "bunx --bun vite dev --port 5176",
+    "build": "bunx --bun vite build"
+  },
+  "dependencies": {
+    "@last-notifications-widgets/vanilla": "workspace:*"
+  },
+  "devDependencies": {
+    "vite": "^8.3.5"
+  }
+}

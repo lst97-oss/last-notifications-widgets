@@ -15,19 +15,26 @@ concurrency:
 jobs:
   verify:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version-file: .bun-version
+      - uses: actions/cache@v6
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-bun-${{ hashFiles('bun.lock') }}
+          restore-keys: ${{ runner.os }}-bun-
       - run: bun install --frozen-lockfile
-      - run: bun run check
+      # One build feeds every gate below; check:built and bell:check never rebuild.
       - run: bun run build
+      - run: bun run check:built
       - run: bun run package:check
       # Real-browser check of the bell. The step installs Chrome for Testing and passes its path to the check.
       - uses: browser-actions/setup-chrome@v2
         id: chrome
-      - run: bun run test:bell
+      - run: bun run bell:check
         env:
           CHROME_PATH: ${{ steps.chrome.outputs.chrome-path }}
 
@@ -35,6 +42,7 @@ jobs:
   changeset:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
         with:
@@ -42,6 +50,11 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version-file: .bun-version
+      - uses: actions/cache@v6
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-bun-${{ hashFiles('bun.lock') }}
+          restore-keys: ${{ runner.os }}-bun-
       - run: bun install --frozen-lockfile
       - name: changeset present
         run: |

@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from 'bun:test'
 import { HttpStatus } from '@lst97-oss/last-httprism'
 
-import { ApiError } from './http'
+import { ApiError, type FetchLike } from './http'
 import { createNotificationsClient } from './server'
 
 const KEY = 'lnk_test_0123456789abcdef'
@@ -24,7 +24,7 @@ function fake(respond: (sent: Sent) => Response) {
 }
 
 const data = (value: unknown) => Response.json({ data: value }, { status: HttpStatus.OK.code })
-const client = (fetchImpl: typeof fetch) =>
+const client = (fetchImpl: FetchLike) =>
   createNotificationsClient({ baseUrl: 'https://notify.test/', appKey: 'app-1', apiKey: KEY, fetchImpl })
 
 afterEach(() => {
@@ -96,9 +96,9 @@ describe('createNotificationsClient', () => {
   })
 
   test('a network failure rejects with ApiError NETWORK_ERROR, so callers can tell it from a bad request', async () => {
-    const fetchImpl = (async () => {
+    const fetchImpl = async () => {
       throw new TypeError('fetch failed')
-    }) as typeof fetch
+    }
     const error = await client(fetchImpl)
       .mintRecipientToken('user-1')
       .catch((caught: unknown) => caught)

@@ -70,18 +70,20 @@ for (const path of tarball) {
 }
 
 // The browser entries must never carry the server SDK: its app key must not be reachable from a page.
+const FRONT_ENDS = ['react', 'vue', 'vanilla', 'angular']
+const BROWSER_ENTRY = new RegExp(`^dist/((${FRONT_ENDS.join('|')})/|client/(index\\.js|chunk-))`)
 for (const path of tarball) {
-  if (!/^dist\/(react\/|client\/(index\.js|chunk-))/.test(path)) continue
+  if (!BROWSER_ENTRY.test(path)) continue
   if ((await Bun.file(`${pkgDir}/${path}`).text()).includes('createNotificationsClient')) {
     problems.push(`${path} carries the server SDK; browser entries must not import ./server`)
   }
 }
 
-// The React bundle imports outside libraries at runtime. Each one must be declared, or installs break for users.
+// Each front-end bundle imports outside libraries at runtime. Each one must be declared, or installs break for users.
 const IMPORT = /(?:from|import)\s*\(?\s*["']([^"']+)["']/g
 const declared = { ...published[0].manifest.dependencies, ...published[0].manifest.peerDependencies }
 for (const path of tarball) {
-  if (!/^dist\/react\/.*\.js$/.test(path)) continue
+  if (!new RegExp(`^dist/(${FRONT_ENDS.join('|')})/.*\\.(js|mjs)$`).test(path)) continue
   const source = await Bun.file(`${pkgDir}/${path}`).text()
   for (const [, spec] of source.matchAll(IMPORT)) {
     if (spec.startsWith('.')) continue

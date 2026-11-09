@@ -69,6 +69,9 @@ function harness(
     tokenRefreshMs?: number
     getToken?: () => Promise<string | null>
     onError?: (error: InboxError) => void
+    retryMinMs?: number
+    retryMaxMs?: number
+    streamStableMs?: number
   } = {},
 ) {
   const tokens = [...(options.tokens ?? ['lrt_1'])]
@@ -98,8 +101,9 @@ function harness(
       return stream
     },
     tokenRefreshMs: options.tokenRefreshMs ?? 60_000,
-    retryMinMs: 5,
-    retryMaxMs: 20,
+    retryMinMs: options.retryMinMs ?? 5,
+    retryMaxMs: options.retryMaxMs ?? 20,
+    streamStableMs: options.streamStableMs ?? 10,
   })
   stores.push(store)
   return { store, streams, sent }
@@ -490,6 +494,26 @@ describe('inbox store paging and archive', () => {
   })
 })
 
+describe('inbox store reconcile', () => {
+  test('archive-read keeps a row that shares the timestamp of the oldest row on the first page', async () => {
+    // Every fixture row shares `at`, so the row after the first page has the same time as the page's oldest row.
+    const { store } = harness({
+      fetch: (url) => {
+        if (url.includes('/inbox/archive')) return ok({ updated: 1 })
+        if (url.includes('before=')) {
+          return ok({ items: [row('b', 'Second')], next: null, total: 2, unread: 2, latest: null })
+        }
+        return ok({ items: [row('a', 'First')], next: 'cursor-1', total: 2, unread: 2, latest: null })
+      },
+    })
+    await store.start()
+    await store.loadMore()
+    expect(store.getState().items.map((item) => item.id)).toEqual(['a', 'b'])
+    await store.archiveRead()
+    expect(store.getState().items.map((item) => item.id)).toEqual(['a', 'b'])
+  })
+})
+
 describe('inbox store failures', () => {
   test('a getToken that throws shows the error, not a missing bell, and retry asks the host again', async () => {
     let attempts = 0
@@ -566,10 +590,68 @@ describe('inbox store failures', () => {
     const streamErrors = () => errors.filter((error) => error.source === 'stream')
     expect(streamErrors()).toHaveLength(1)
     expect(streamErrors()[0]?.cause).toBe('stream answered 500')
+    // A stream that stays up past the stable window ends the outage, so its next drop is reported again.
     streams.at(-1)?.emit('open')
+    await settle(30)
     streams.at(-1)?.emit('error')
     await settle(40)
     expect(streamErrors()).toHaveLength(2)
+  })
+
+  test('a stream that opens and drops at once keeps backing off, and its outage is reported once', async () => {
+    const errors: InboxError[] = []
+    const tokens = ['lrt_1', 'lrt_2', 'lrt_3', 'lrt_4', 'lrt_5']
+    const { store, streams } = harness({
+      tokens,
+      retryMinMs: 40,
+      retryMaxMs: 10_000,
+      streamStableMs: 10_000,
+      onError: (error) => errors.push(error),
+    })
+    await store.start()
+    // Each stream opens and drops at once. The wait before the next try should double, with jitter of half to one and
+    // a half: 20-60 ms, then 40-120, 80-240, 160-480.
+    const waits: number[] = []
+    for (let cycle = 0; cycle < 4; cycle += 1) {
+      const before = streams.length
+      streams.at(-1)?.emit('open')
+      streams.at(-1)?.emit('error')
+      const started = Date.now()
+      while (streams.length === before) await settle(2)
+      waits.push(Date.now() - started)
+    }
+    expect(waits[0]).toBeLessThan(70)
+    expect(waits[3]).toBeGreaterThan(140)
+    expect(errors.filter((error) => error.source === 'stream')).toHaveLength(1)
+  })
+
+  test('a token refresh that fails during a request is retried, not reported as a permanent refusal', async () => {
+    let calls = 0
+    let listCalls = 0
+    const errors: InboxError[] = []
+    const { store } = harness({
+      getToken: async () => {
+        calls += 1
+        if (calls === 1) return 'lrt_old'
+        // The host's token endpoint is briefly down while the bell replaces the expired token.
+        if (calls === 2) throw new TokenError('NOTIFICATIONS_UNAVAILABLE', 'busy', HttpStatus.SERVICE_UNAVAILABLE.code)
+        return 'lrt_new'
+      },
+      fetch: (url) => {
+        if (!url.includes('/inbox?')) return ok({})
+        listCalls += 1
+        // The first two list calls use the expired token and are refused.
+        return listCalls <= 2 ? failure('INVALID_RECIPIENT_TOKEN', HttpStatus.UNAUTHORIZED.code) : ok(page)
+      },
+      onError: (error) => errors.push(error),
+    })
+    await store.start()
+    await settle(60)
+    expect(store.getState()).toMatchObject({ status: 'ready' })
+    expect(calls).toBe(3)
+    const inboxErrors = errors.filter((error) => error.source === 'inbox')
+    expect(inboxErrors.length).toBeGreaterThan(0)
+    expect(inboxErrors.every((error) => error.retryable)).toBe(true)
   })
 
   test('a failed load-more keeps the rows shown and flags it, and the next attempt clears the flag', async () => {
@@ -687,7 +769,7 @@ describe('inbox store recovery', () => {
     const { store } = harness({
       getToken: async () => {
         calls += 1
-        throw new TokenError('NOTIFICATIONS_NOT_CONFIGURED', 'not set up', 501)
+        throw new TokenError('NOTIFICATIONS_NOT_CONFIGURED', 'not set up', HttpStatus.NOT_IMPLEMENTED.code)
       },
     })
     await store.start()
@@ -703,7 +785,7 @@ describe('inbox store recovery', () => {
       getToken: async () => {
         calls += 1
         if (calls === 1) return 'lrt_1'
-        throw new TokenError('NOTIFICATIONS_NOT_CONFIGURED', 'not set up', 501)
+        throw new TokenError('NOTIFICATIONS_NOT_CONFIGURED', 'not set up', HttpStatus.NOT_IMPLEMENTED.code)
       },
     })
     await store.start()

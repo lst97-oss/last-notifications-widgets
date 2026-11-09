@@ -1,0 +1,20 @@
+{
+  "name": "vue-demo",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "bunx --bun vite dev --port 5174",
+    "build": "bunx --bun vite build"
+  },
+  "dependencies": {
+    "@last-notifications-widgets/vue": "workspace:*",
+    "@lucide/vue": "^1.61.0",
+    "reka-ui": "^2.11.0",
+    "vue": "^3.5.44"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-vue": "^6.0.10",
+    "typescript": "^6.0.3",
+    "vite": "^8.3.5"
+  }
+}

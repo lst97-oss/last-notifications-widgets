@@ -34,7 +34,7 @@
     "build:client": "bun run -F @last-notifications-widgets/client build"
   },
   "devDependencies": {
-    "@biomejs/biome": "^2.6.4",
+    "@biomejs/biome": "^2.6.6",
     "@changesets/cli": "^3.0.3",
     "@lst97-oss/last-httprism": "0.2.0",
     "@types/react": "^19.3.0",

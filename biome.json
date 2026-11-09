@@ -14,7 +14,7 @@
 	"formatter": { "enabled": false },
 	"linter": {
 		"enabled": true,
-		"includes": ["packages/*/src/**", "scripts/**", "examples/*/src/**"],
+		"includes": ["packages/*/src/**", "scripts/**", "examples/*/src/**", "!**/*.vue"],
 		"rules": { "preset": "recommended" }
 	},
 	"assist": {

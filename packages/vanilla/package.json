@@ -1,0 +1,47 @@
+{
+  "name": "@last-notifications-widgets/vanilla",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Notification bell widget for plain HTML (no framework).",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/lst97-oss/last-notifications-widgets.git",
+    "directory": "packages/vanilla"
+  },
+  "homepage": "https://github.com/lst97-oss/last-notifications-widgets#readme",
+  "bugs": {
+    "url": "https://github.com/lst97-oss/last-notifications-widgets/issues"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./styles.css": "./dist/styles.css",
+    "./package.json": "./package.json"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "bunx tsup src/index.ts --format esm --clean --dts --target es2022 --out-dir dist && bunx @tailwindcss/cli -i ./src/styles.css -o ./dist/styles.css",
+    "typecheck": "bunx tsc --noEmit",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@last-notifications-widgets/client": "workspace:*",
+    "lucide": "^1.66.0",
+    "tailwind-merge": "^3.7.0"
+  },
+  "devDependencies": {
+    "@last-notifications-widgets/theme": "workspace:*",
+    "@tailwindcss/cli": "4.3.3",
+    "tailwindcss": "4.3.3",
+    "tsup": "^9.0.0",
+    "typescript": "^6.0.3"
+  }
+}

@@ -79,7 +79,7 @@ describe('retry classification', () => {
   })
 
   test('a permanent ApiError is marked not retryable', () => {
-    expect(new ApiError('APP_NOT_FOUND', 'missing', 404).retryable).toBe(false)
+    expect(new ApiError('APP_NOT_FOUND', 'missing', HttpStatus.NOT_FOUND.code).retryable).toBe(false)
   })
 
   test('Retry-After reads delta-seconds and HTTP dates, and ignores anything else', () => {

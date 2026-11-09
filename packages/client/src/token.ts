@@ -1,4 +1,4 @@
-import { ApiError, parseRetryAfter } from './http'
+import { ApiError, type FetchLike, parseRetryAfter } from './http'
 
 // A token endpoint failed. Its status decides `retryable` (inherited from ApiError), so a 503 retries and a 501 does not.
 export class TokenError extends ApiError {
@@ -17,7 +17,7 @@ export type TokenProviderOptions = {
   // The host's token endpoint. It must answer {data:{token}} for a signed-in visitor and {data:{token:null}} for a
   // signed-out one; any other answer is a failure.
   url: string
-  fetchImpl?: typeof fetch
+  fetchImpl?: FetchLike
   timeoutMs?: number
 }
 
@@ -29,6 +29,8 @@ export function createTokenProvider(options: TokenProviderOptions): () => Promis
     try {
       response = await (options.fetchImpl ?? fetch)(options.url, {
         credentials: 'same-origin',
+        // The answer is a 15-minute bearer token: a cached copy would outlive its expiry, so the browser never keeps one.
+        cache: 'no-store',
         signal: AbortSignal.timeout(timeoutMs),
       })
     } catch (cause) {

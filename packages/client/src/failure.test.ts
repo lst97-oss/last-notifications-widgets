@@ -48,6 +48,11 @@ describe('createBackoff', () => {
     expect(backoff.next()).toBe(20)
   })
 
+  test('a huge server hint is capped, so a timer never fires at once by overflow', () => {
+    const backoff = createBackoff({ minMs: 10, maxMs: 40, random: () => 0.5 })
+    expect(backoff.next(3_000_000_000)).toBe(5 * 60_000)
+  })
+
   test('reset starts the schedule again', () => {
     const backoff = createBackoff({ minMs: 10, maxMs: 40, random: () => 0.5 })
     backoff.next()

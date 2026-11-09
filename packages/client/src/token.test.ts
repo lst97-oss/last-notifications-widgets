@@ -47,6 +47,19 @@ describe('createTokenProvider', () => {
     })
   })
 
+  test('the token request is never served from the browser cache', async () => {
+    let cache: string | undefined
+    const getToken = createTokenProvider({
+      url: URL,
+      fetchImpl: async (_input, init) => {
+        cache = init?.cache
+        return Response.json({ data: { token: 'lrt_1' } })
+      },
+    })
+    await getToken()
+    expect(cache).toBe('no-store')
+  })
+
   test('a 501 is a permanent TokenError, so the store will not retry it', async () => {
     const error = await rejected(
       providerReturning(() =>

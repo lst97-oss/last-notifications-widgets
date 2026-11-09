@@ -1,12 +1,15 @@
 import {
   ApiError,
   createInboxApi,
+  type FetchLike,
   type InboxItem,
   LOAD_ERROR_MESSAGE,
   TOKEN_ERROR_CODE,
   UNAVAILABLE_MESSAGE,
 } from './api'
+import { createArchive } from './archive'
 import { createBackoff, type Failure, failureOf } from './failure'
+import { uniqueById } from './rows'
 import { openSseStream, type Stream, type StreamEvent } from './stream'
 
 export type { Stream, StreamEvent } from './stream'
@@ -68,12 +71,14 @@ export type InboxStoreOptions = {
   getToken: () => Promise<string | null>
   // Hears every failure, for the host's logs and metrics. The widget shows its own message either way.
   onError?: (error: InboxError) => void
-  fetchImpl?: typeof fetch
+  fetchImpl?: FetchLike
   // Opens the live stream. The default reads it over fetch, with the token in the Authorization header.
   openStream?: (url: string, token: string) => Stream
   tokenRefreshMs?: number
   retryMinMs?: number
   retryMaxMs?: number
+  // How long a stream must stay up before the retry schedule resets and a later drop counts as a new outage.
+  streamStableMs?: number
   pageSize?: number
 }
 
@@ -103,7 +108,8 @@ const EMPTY_ARCHIVE: ArchiveState = {
   loadMoreFailed: false,
   error: null,
 }
-const INITIAL: InboxState = {
+// The state before the first load. Ports that show a failed bell without a store copy it from here.
+export const INITIAL_STATE: InboxState = {
   status: 'loading',
   items: [],
   next: null,
@@ -137,32 +143,24 @@ const browser = globalThis as unknown as BrowserGlobals
 // Automatic retries wait while the browser is offline or the tab is hidden, then run when it can.
 const canRetryNow = () => browser.navigator?.onLine !== false && browser.document?.hidden !== true
 
-// Keeps the first occurrence of each id: a page boundary or a reconnect can deliver a row twice.
-function uniqueById(items: InboxItem[]): InboxItem[] {
-  const seen = new Set<string>()
-  return items.filter((item) => {
-    if (seen.has(item.id)) return false
-    seen.add(item.id)
-    return true
-  })
-}
-
 // A transient failure invites a retry; a permanent one shows that retrying cannot help.
 const messageFor = (failure: Failure) => (failure.retryable ? LOAD_ERROR_MESSAGE : UNAVAILABLE_MESSAGE)
 
-type Refresh = { token: string | null; failure: Failure | null }
+// `cause` is the error the host's getToken threw, kept so a failed refresh can be classified by its own error.
+type Refresh = { token: string | null; failure: Failure | null; cause?: unknown }
 
 export function createInboxStore(options: InboxStoreOptions): InboxStore {
   const api = createInboxApi(options)
   const openStream =
     options.openStream ?? ((url: string, token: string) => openSseStream(options.fetchImpl ?? fetch, url, token))
   const tokenRefreshMs = options.tokenRefreshMs ?? DEFAULT_TOKEN_REFRESH_MS
+  const streamStableMs = options.streamStableMs ?? 30_000
   const pageSize = options.pageSize ?? 20
   // One schedule for every automatic retry: a stream reconnect, a token refresh and a failed load all wait on it.
   const backoff = createBackoff({ minMs: options.retryMinMs ?? 1_000, maxMs: options.retryMaxMs ?? 30_000 })
   const listeners = new Set<() => void>()
 
-  let state: InboxState = INITIAL
+  let state: InboxState = INITIAL_STATE
   // Bumped by every start and stop, so late responses from an earlier session are dropped.
   let generation = 0
   let token: string | null = null
@@ -170,6 +168,8 @@ export function createInboxStore(options: InboxStoreOptions): InboxStore {
   let stream: Stream | null = null
   let refreshTimer: ReturnType<typeof setTimeout> | undefined
   let retryTimer: ReturnType<typeof setTimeout> | undefined
+  // Runs the schedule reset once the current stream has stayed up for `streamStableMs`.
+  let stableTimer: ReturnType<typeof setTimeout> | undefined
   // A retry that came due while the browser was offline or hidden; it runs when the browser can.
   let waiting: (() => void) | null = null
   // The refresh in flight, shared by every caller that needs a new token at the same time.
@@ -182,10 +182,6 @@ export function createInboxStore(options: InboxStoreOptions): InboxStore {
   function setState(next: Partial<InboxState>) {
     state = { ...state, ...next }
     for (const listener of listeners) listener()
-  }
-
-  function setArchive(next: Partial<ArchiveState>) {
-    setState({ archive: { ...state.archive, ...next } })
   }
 
   // The host hears about every failure. A throwing host callback must not break the store.
@@ -241,6 +237,8 @@ export function createInboxStore(options: InboxStoreOptions): InboxStore {
   function closeStream() {
     stream?.close()
     stream = null
+    // A stream that ends before it was stable has not earned a schedule reset.
+    clearTimeout(stableTimer)
   }
 
   function cancelTimers() {
@@ -287,7 +285,7 @@ export function createInboxStore(options: InboxStoreOptions): InboxStore {
           if (!tokenDown) report('token', failure, cause)
           tokenDown = true
           // The current token stays in use; the caller decides what a failed refresh means.
-          return { token, failure }
+          return { token, failure, cause }
         },
       )
       .finally(() => {
@@ -296,14 +294,17 @@ export function createInboxStore(options: InboxStoreOptions): InboxStore {
     return refreshing
   }
 
-  // Runs one request with the current token; an expired token is replaced once and the request retried.
+  // Runs one request with the current token. An expired token is replaced once and the request retried. When the
+  // replacement cannot be had, the refresh's own error is thrown, so a transient outage stays retryable.
   async function authorized<T>(run: (current: string) => Promise<T>): Promise<T> {
     if (token === null) throw new Error('not signed in')
     try {
       return await run(token)
     } catch (error) {
       if (!(error instanceof ApiError) || error.code !== TOKEN_ERROR_CODE) throw error
-      token = (await refreshToken()).token
+      const refresh = await refreshToken()
+      if (refresh.failure) throw refresh.cause
+      token = refresh.token
       if (token === null) throw error
       return run(token)
     }
@@ -322,8 +323,13 @@ export function createInboxStore(options: InboxStoreOptions): InboxStore {
     current.addEventListener(
       'open',
       guard(() => {
-        backoff.reset()
-        streamDown = false
+        // Opening is not yet proof of health: a stream that opens and drops at once keeps backing off, and its outage
+        // is reported once. Only a stream that stays up resets both.
+        clearTimeout(stableTimer)
+        stableTimer = setTimeout(() => {
+          backoff.reset()
+          streamDown = false
+        }, streamStableMs)
       }),
     )
     current.addEventListener('notification', guard(receive))
@@ -354,7 +360,6 @@ export function createInboxStore(options: InboxStoreOptions): InboxStore {
     }
     if (refresh.token === null) return goAnonymous()
     token = refresh.token
-    backoff.reset()
     open(gen, token)
   }
 
@@ -446,9 +451,10 @@ export function createInboxStore(options: InboxStoreOptions): InboxStore {
       if (gen !== generation) return
       const headIds = new Set(page.items.map((item) => item.id))
       const oldest = page.items.at(-1)?.createdAt
-      // An empty first page means the inbox is empty, so no loaded row can still be in it.
+      // An empty first page means the inbox is empty, so no loaded row can still be in it. A row that shares the
+      // oldest timestamp is still in the inbox: it was not on this page, so it stays.
       const tail =
-        oldest === undefined ? [] : state.items.filter((item) => !headIds.has(item.id) && item.createdAt < oldest)
+        oldest === undefined ? [] : state.items.filter((item) => !headIds.has(item.id) && item.createdAt <= oldest)
       setState({
         items: uniqueById([...page.items, ...tail]),
         next: tail.length > 0 ? state.next : page.next,
@@ -477,45 +483,6 @@ export function createInboxStore(options: InboxStoreOptions): InboxStore {
       fail('inbox', cause)
       setState({ loadingMore: false, loadMoreFailed: true })
     }
-  }
-
-  async function loadArchive(gen: number, from?: string): Promise<void> {
-    const isMore = from !== undefined
-    setArchive(
-      isMore ? { loadingMore: true, loadMoreFailed: false } : { status: 'loading', error: null, loadMoreFailed: false },
-    )
-    try {
-      const page = await authorized((current) =>
-        api.list(current, { limit: pageSize, view: 'archived', ...(isMore ? { before: from } : {}) }),
-      )
-      if (gen !== generation) return
-      setArchive({
-        items: uniqueById(isMore ? [...state.archive.items, ...page.items] : page.items),
-        next: page.next,
-        status: 'ready',
-        loadingMore: false,
-        loadMoreFailed: false,
-        error: null,
-      })
-    } catch (cause) {
-      if (gen !== generation) return
-      fail('archive', cause)
-      // Only the first page can replace the list with an error. A later page keeps the rows already listed.
-      if (isMore) setArchive({ loadingMore: false, loadMoreFailed: true })
-      else setArchive({ status: 'error', loadingMore: false, error: LOAD_ERROR_MESSAGE })
-    }
-  }
-
-  // Refetches the archive only if it was ever loaded; an unopened archive stays unfetched.
-  function reloadArchiveIfLoaded(gen: number) {
-    if (state.archive.status !== 'idle') void loadArchive(gen)
-  }
-
-  // After a failed action both lists reload from the server, replacing the optimistic change.
-  function reloadAfterFailure(gen: number) {
-    if (gen !== generation) return
-    void load(gen)
-    reloadArchiveIfLoaded(gen)
   }
 
   function stop() {
@@ -579,96 +546,18 @@ export function createInboxStore(options: InboxStoreOptions): InboxStore {
     return send({ all: true })
   }
 
-  async function openArchive(): Promise<void> {
-    if (state.view === 'archive') return
-    setState({ view: 'archive' })
-    if (state.archive.status === 'idle' || state.archive.status === 'error') {
-      await loadArchive(generation)
-    }
-  }
-
-  function closeArchive() {
-    setState({ view: 'inbox' })
-  }
-
-  async function loadMoreArchive(): Promise<void> {
-    if (state.archive.next === null || state.archive.loadingMore || state.archive.status !== 'ready') return
-    await loadArchive(generation, state.archive.next)
-  }
-
-  // Moves rows from the inbox to the archive. Archiving marks them read, so the badge drops by the unread ones.
-  function archive(ids: string[]): Promise<boolean> {
-    const picked = state.items.filter((item) => ids.includes(item.id))
-    if (picked.length === 0) return Promise.resolve(true)
-    const pickedIds = picked.map((item) => item.id)
-    const now = new Date().toISOString()
-    const moved = picked.map((item) => ({ ...item, readAt: item.readAt ?? now, archivedAt: now }))
-    const unread = picked.filter((item) => item.readAt === null).length
-    setState({
-      items: state.items.filter((item) => !pickedIds.includes(item.id)),
-      total: Math.max(0, state.total - picked.length),
-      unread: Math.max(0, state.unread - unread),
-      archive: { ...state.archive, items: uniqueById([...moved, ...state.archive.items]) },
-    })
-    const gen = generation
-    return authorized((current) => api.archive(current, { ids: pickedIds })).then(
-      () => true,
-      (cause) => {
-        fail('action', cause)
-        reloadAfterFailure(gen)
-        return false
-      },
-    )
-  }
-
-  // Archives every read row. The server may hold read rows beyond the loaded pages, so both lists re-read.
-  function archiveRead(): Promise<boolean> {
-    const now = new Date().toISOString()
-    const moved = state.items.filter((item) => item.readAt !== null).map((item) => ({ ...item, archivedAt: now }))
-    const movedIds = new Set(moved.map((item) => item.id))
-    setState({
-      items: state.items.filter((item) => !movedIds.has(item.id)),
-      total: Math.max(0, state.total - moved.length),
-      archive: { ...state.archive, items: uniqueById([...moved, ...state.archive.items]) },
-    })
-    const gen = generation
-    return authorized((current) => api.archive(current, { read: true })).then(
-      async () => {
-        if (gen === generation) {
-          await refreshHead(gen)
-          reloadArchiveIfLoaded(gen)
-        }
-        return true
-      },
-      (cause) => {
-        fail('action', cause)
-        reloadAfterFailure(gen)
-        return false
-      },
-    )
-  }
-
-  // Brings archived rows back to the inbox. They are read already, so the badge does not change.
-  function restore(ids: string[]): Promise<boolean> {
-    const picked = state.archive.items.filter((item) => ids.includes(item.id))
-    if (picked.length === 0) return Promise.resolve(true)
-    const pickedIds = picked.map((item) => item.id)
-    const restored = picked.map((item) => ({ ...item, archivedAt: null }))
-    setState({
-      items: uniqueById([...state.items, ...restored]).sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
-      total: state.total + pickedIds.length,
-      archive: { ...state.archive, items: state.archive.items.filter((item) => !pickedIds.includes(item.id)) },
-    })
-    const gen = generation
-    return authorized((current) => api.restore(current, pickedIds)).then(
-      () => true,
-      (cause) => {
-        fail('action', cause)
-        reloadAfterFailure(gen)
-        return false
-      },
-    )
-  }
+  // The archive job owns its own list, paging and moves. It shares the state and the signed-in call with this store.
+  const archiveJob = createArchive({
+    api,
+    pageSize,
+    getState: () => state,
+    setState,
+    authorized,
+    fail,
+    generation: () => generation,
+    reloadInbox: load,
+    refreshHead,
+  })
 
   return {
     getState: () => state,
@@ -684,11 +573,11 @@ export function createInboxStore(options: InboxStoreOptions): InboxStore {
     markRead,
     markAllRead,
     loadMore,
-    openArchive,
-    closeArchive,
-    loadMoreArchive,
-    archive,
-    archiveRead,
-    restore,
+    openArchive: archiveJob.open,
+    closeArchive: archiveJob.close,
+    loadMoreArchive: archiveJob.loadMore,
+    archive: archiveJob.archive,
+    archiveRead: archiveJob.archiveRead,
+    restore: archiveJob.restore,
   }
 }

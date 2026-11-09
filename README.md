@@ -7,11 +7,12 @@ via `data.url`, and live arrivals over the server's stream.
 ## Install
 
 ```sh
-bun add @lst97-oss/last-notifications-widgets
-# or: npm install @lst97-oss/last-notifications-widgets
+bun add @lst97-oss/last-notifications-widgets lucide-react
+# or: npm install @lst97-oss/last-notifications-widgets lucide-react
 ```
 
-React is an optional peer: the `/react` entry needs React 19, while `/client` and `/server` do not.
+React is an optional peer: the `/react` entry needs React 19, `react-dom` and `lucide-react`, while `/client` and
+`/server` do not. Each framework's icon package is an optional peer too; see [Other frameworks](#other-frameworks).
 
 ```tsx
 import '@lst97-oss/last-notifications-widgets/styles.css'
@@ -78,7 +79,8 @@ export class BellComponent {}
 ```
 
 Vue needs `vue`, `reka-ui` and `@lucide/vue`. Angular needs `@angular/core`, `@angular/common` and `@lucide/angular`.
-Vanilla needs nothing extra. These are optional peers, so a React app never installs them.
+Vanilla needs `lucide`. These are optional peers, so a React app never installs the Vue, Angular or vanilla icon
+packages.
 
 ## Sending notifications from a backend (server SDK)
 

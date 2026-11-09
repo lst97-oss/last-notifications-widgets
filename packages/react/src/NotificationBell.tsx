@@ -1,4 +1,4 @@
-import { createTokenProvider, type InboxItem } from '@last-notifications-widgets/client'
+import { type BellNote, bellAnnouncement, bellLabel, createTokenProvider } from '@last-notifications-widgets/client'
 import { lazy, Suspense, useState } from 'react'
 
 import { Popover, PopoverContent } from '@/ui/popover'
@@ -27,30 +27,22 @@ function InboxBell({ baseUrl, appKey, onError, theme, themeVars, className, ...s
   // function through a ref, so building the provider on each render is harmless.
   const getToken = source.getToken ?? createTokenProvider({ url: source.tokenUrl ?? '' })
   const { store, state } = useInbox({ baseUrl, appKey, getToken, onError })
-  // A message from an action ("Archived 3 notifications"). It is tied to the newest live arrival at the time it
-  // was set, so a later arrival is announced instead of the stale message.
-  const [note, setNote] = useState<{ text: string; after: InboxItem | null }>({ text: '', after: null })
+  const [note, setNote] = useState<BellNote>({ text: '', after: null })
   const announce = (text: string) => setNote({ text, after: state.announced })
   if (state.status === 'anonymous') return null
 
   const failed = state.status === 'error'
-  const label = failed
-    ? "Notifications, couldn't load"
-    : state.unread > 0
-      ? `Notifications, ${state.unread} unread`
-      : 'Notifications'
-  const arrival = state.announced ? `New notification: ${state.announced.title}` : ''
-  const announcement = failed
-    ? "Notifications couldn't load."
-    : note.text && note.after === state.announced
-      ? note.text
-      : arrival
 
   return (
     <NotificationBellTheme theme={theme} themeVars={themeVars} className={className}>
       <TooltipProvider delay={300}>
         <Popover>
-          <BellTrigger label={label} unread={state.unread} loading={state.status === 'loading'} failed={failed} />
+          <BellTrigger
+            label={bellLabel(state)}
+            unread={state.unread}
+            loading={state.status === 'loading'}
+            failed={failed}
+          />
           <PopoverContent align="end" className={POPUP_CLASS}>
             {state.view === 'archive' ? (
               <>
@@ -69,7 +61,7 @@ function InboxBell({ baseUrl, appKey, onError, theme, themeVars, className, ...s
         </Popover>
       </TooltipProvider>
       <div role="status" aria-live="polite" className="sr-only">
-        {announcement}
+        {bellAnnouncement(state, note)}
       </div>
     </NotificationBellTheme>
   )

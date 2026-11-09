@@ -3,7 +3,7 @@ printWidth = 120
 semi = false
 singleQuote = true
 trailingComma = "all"
-ignorePatterns = ["**/*.json", "**/*.jsonc", "**/*.md", "**/*.toml", "**/*.yaml", "**/*.yml", ".changeset/", "**/dist/"]
+ignorePatterns = ["**/*.json", "**/*.jsonc", "**/*.md", "**/*.toml", "**/*.yaml", "**/*.yml", ".changeset/", "**/dist/", "graphify-out/"]
 
 [[fmt.overrides]]
 files = ["**/*.css"]

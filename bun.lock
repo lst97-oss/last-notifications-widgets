@@ -98,8 +98,6 @@
       "dependencies": {
         "@base-ui/react": "^1.9.0",
         "class-variance-authority": "^0.7.1",
-        "lucide": "^1.66.0",
-        "lucide-react": "^1.61.0",
         "tailwind-merge": "^3.7.0",
       },
       "peerDependencies": {
@@ -107,6 +105,8 @@
         "@angular/core": "^22.0.0",
         "@lucide/angular": "^1.66.0",
         "@lucide/vue": "^1.61.0",
+        "lucide": "^1.66.0",
+        "lucide-react": "^1.61.0",
         "react": "^19.0.0",
         "react-dom": "^19.0.0",
         "reka-ui": "^2.11.0",
@@ -117,6 +117,8 @@
         "@angular/core",
         "@lucide/angular",
         "@lucide/vue",
+        "lucide",
+        "lucide-react",
         "react",
         "react-dom",
         "reka-ui",

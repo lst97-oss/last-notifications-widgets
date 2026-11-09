@@ -1,7 +1,7 @@
 {
   "name": "@lst97-oss/last-notifications-widgets",
   "version": "0.1.0",
-  "description": "Notification bell widget for last-notifications: framework-free client plus React component and theme.",
+  "description": "Notification bell widget for last-notifications: framework-free client plus React, Vue, Angular and vanilla components and theme.",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -21,6 +21,9 @@
     "inbox",
     "bell",
     "react",
+    "vue",
+    "angular",
+    "vanilla-js",
     "last-notifications"
   ],
   "exports": {
@@ -40,8 +43,24 @@
       "types": "./dist/react/index.d.ts",
       "import": "./dist/react/index.js"
     },
+    "./vue": {
+      "types": "./dist/vue/index.d.ts",
+      "import": "./dist/vue/index.js"
+    },
     "./styles.css": "./dist/styles.css",
-    "./package.json": "./package.json"
+    "./react/styles.css": "./dist/react/styles.css",
+    "./vue/styles.css": "./dist/vue/styles.css",
+    "./package.json": "./package.json",
+    "./vanilla": {
+      "types": "./dist/vanilla/index.d.ts",
+      "import": "./dist/vanilla/index.js"
+    },
+    "./vanilla/styles.css": "./dist/vanilla/styles.css",
+    "./angular": {
+      "types": "./dist/angular/types/last-notifications-widgets-angular.d.ts",
+      "import": "./dist/angular/fesm2022/last-notifications-widgets-angular.mjs"
+    },
+    "./angular/styles.css": "./dist/angular/styles.css"
   },
   "files": [
     "dist"
@@ -52,19 +71,43 @@
   "dependencies": {
     "@base-ui/react": "^1.9.0",
     "class-variance-authority": "^0.7.1",
-    "clsx": "^2.1.1",
+    "lucide": "^1.66.0",
     "lucide-react": "^1.61.0",
     "tailwind-merge": "^3.7.0"
   },
   "peerDependencies": {
+    "@angular/common": "^22.0.0",
+    "@angular/core": "^22.0.0",
+    "@lucide/angular": "^1.66.0",
+    "@lucide/vue": "^1.61.0",
     "react": "^19.0.0",
-    "react-dom": "^19.0.0"
+    "react-dom": "^19.0.0",
+    "reka-ui": "^2.11.0",
+    "vue": "^3.5.44"
   },
   "peerDependenciesMeta": {
+    "@angular/common": {
+      "optional": true
+    },
+    "@angular/core": {
+      "optional": true
+    },
+    "@lucide/angular": {
+      "optional": true
+    },
+    "@lucide/vue": {
+      "optional": true
+    },
     "react": {
       "optional": true
     },
     "react-dom": {
+      "optional": true
+    },
+    "reka-ui": {
+      "optional": true
+    },
+    "vue": {
       "optional": true
     }
   }

@@ -28,7 +28,7 @@
     "dist"
   ],
   "scripts": {
-    "build": "bunx vite build && bunx @tailwindcss/cli -i ./src/styles.css -o ./dist/styles.css",
+    "build": "bunx vite build && bunx @tailwindcss/cli -i ./src/styles.css -o ./dist/styles.css --minify",
     "typecheck": "vue-tsc --noEmit",
     "test": "bun test"
   },

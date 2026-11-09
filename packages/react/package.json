@@ -19,7 +19,7 @@
     "dist"
   ],
   "scripts": {
-    "build": "bunx tsup && bunx @tailwindcss/cli -i ./src/styles.css -o ./dist/styles.css",
+    "build": "bunx tsup && bunx @tailwindcss/cli -i ./src/styles.css -o ./dist/styles.css --minify",
     "typecheck": "bun check --no-script"
   },
   "dependencies": {

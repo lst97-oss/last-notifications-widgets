@@ -25,7 +25,7 @@
     "dist"
   ],
   "scripts": {
-    "build": "bunx ng-packagr -p ng-package.json && bunx @tailwindcss/cli -i ./src/styles.css -o ./dist/styles.css",
+    "build": "bunx ng-packagr -p ng-package.json && bunx @tailwindcss/cli -i ./src/styles.css -o ./dist/styles.css --minify",
     "typecheck": "bunx ngc -p tsconfig.json --noEmit"
   },
   "dependencies": {

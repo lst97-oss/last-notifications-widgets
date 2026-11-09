@@ -28,7 +28,7 @@
     "dist"
   ],
   "scripts": {
-    "build": "bunx tsup src/index.ts --format esm --clean --dts --target es2022 --out-dir dist && bunx @tailwindcss/cli -i ./src/styles.css -o ./dist/styles.css",
+    "build": "bunx tsup src/index.ts --format esm --clean --dts --target es2022 --out-dir dist && bunx @tailwindcss/cli -i ./src/styles.css -o ./dist/styles.css --minify",
     "typecheck": "bunx tsc --noEmit",
     "test": "bun test"
   },

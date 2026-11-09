@@ -1,6 +1,6 @@
 {
   "name": "@lst97-oss/last-notifications-widgets",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Notification bell widget for last-notifications: framework-free client plus React, Vue, Angular and vanilla components and theme.",
   "license": "MIT",
   "repository": {

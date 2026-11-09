@@ -1,5 +1,13 @@
 # @lst97-oss/last-notifications-widgets
 
+## 0.2.1
+
+### Patch Changes
+
+- `lucide` and `lucide-react` are optional peers instead of dependencies, matching the existing `@lucide/vue` and
+  `@lucide/angular` peers. Install `lucide-react` for the React entry and `lucide` for the vanilla entry. A default
+  install no longer pulls both icon packages (~82 MB) for frameworks you do not use.
+
 ## 0.2.0
 
 ### Minor Changes

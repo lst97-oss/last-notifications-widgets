@@ -94,7 +94,7 @@
     },
     "packages/last-notifications-widgets": {
       "name": "@lst97-oss/last-notifications-widgets",
-      "version": "0.2.0",
+      "version": "0.2.1",
       "dependencies": {
         "@base-ui/react": "^1.9.0",
         "class-variance-authority": "^0.7.1",

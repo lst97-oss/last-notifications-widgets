@@ -26,6 +26,60 @@ import { NotificationBell } from '@lst97-oss/last-notifications-widgets/react'
 />
 ```
 
+## Other frameworks
+
+The same bell ships for Vue, plain HTML and Angular, with the same props as the React bell. Each framework imports its
+own stylesheet, because the compiled CSS only carries the classes that framework's bell uses.
+
+```vue
+<script setup lang="ts">
+import '@lst97-oss/last-notifications-widgets/vue/styles.css'
+import { NotificationBell } from '@lst97-oss/last-notifications-widgets/vue'
+</script>
+
+<template>
+  <NotificationBell
+    base-url="https://notifications.example.com"
+    app-key="my-app"
+    :session="hostUser.id"
+    token-url="/api/notifications-token"
+    :on-error="(error) => console.warn('[notifications]', error.source, error.code)"
+  />
+</template>
+```
+
+```html
+<div id="bell"></div>
+<script type="module">
+  import '@lst97-oss/last-notifications-widgets/vanilla/styles.css'
+  import { mountNotificationBell } from '@lst97-oss/last-notifications-widgets/vanilla'
+
+  const bell = mountNotificationBell(document.getElementById('bell'), {
+    baseUrl: 'https://notifications.example.com',
+    appKey: 'my-app',
+    session: hostUser.id, // null renders nothing; call bell.update({ session }) when it changes
+    tokenUrl: '/api/notifications-token',
+  })
+</script>
+```
+
+```ts
+// In the global styles: @import "@lst97-oss/last-notifications-widgets/angular/styles.css";
+import { Component } from '@angular/core'
+import { NotificationBellComponent } from '@lst97-oss/last-notifications-widgets/angular'
+
+@Component({
+  selector: 'app-bell',
+  imports: [NotificationBellComponent],
+  template: `<ln-notification-bell baseUrl="https://notifications.example.com" appKey="my-app"
+    [session]="hostUser.id" tokenUrl="/api/notifications-token" (error)="log($event)" />`,
+})
+export class BellComponent {}
+```
+
+Vue needs `vue`, `reka-ui` and `@lucide/vue`. Angular needs `@angular/core`, `@angular/common` and `@lucide/angular`.
+Vanilla needs nothing extra. These are optional peers, so a React app never installs them.
+
 ## Sending notifications from a backend (server SDK)
 
 Any host can publish, without the bell: the server entry sends with the app's `lnk_` key. It refuses to run in a browser, so the key cannot reach a page.
@@ -116,7 +170,11 @@ await notifications.recipients.clear('user-42', ['email']) // idempotent
 The bell retries on its own, so a host does not write retry loops. One schedule covers every automatic retry:
 stream reconnects, token refreshes and failed loads. Each wait doubles from about one second up to 30 seconds, with
 jitter, and a server's `Retry-After` replaces the wait once. Retries pause while the browser is offline or the tab
-is hidden, and resume when it returns.
+is hidden, and resume when it returns. A `Retry-After` longer than 5 minutes is capped at 5 minutes.
+
+A live stream that does not answer within 10 seconds, or sends nothing for 90 seconds, is cut and reconnected. A stream
+that stays up for 30 seconds resets the schedule and ends its outage, so a stream that opens and drops at once keeps
+backing off and is reported once.
 
 | Failure                                                 | Retried on its own | What the bell shows       |
 | ------------------------------------------------------- | ------------------ | ------------------------- |
@@ -157,15 +215,17 @@ so one brand object themes both. The `--ln-*` knobs cover layout (`triggerSize`,
 - Register the site's origin on the app at `/dashboard/apps`. Mark read is a cross-origin POST.
 - The stream is long-lived. Run the server with `NITRO_PRESET=node-server` (the Docker default); the
   `vercel` preset cannot hold it open.
+- Send a keepalive comment (a line starting with `:`) on the stream at least every 45 seconds. The widget cuts a
+  stream that is silent for 90 seconds, so a quiet but healthy stream must still send one.
 
 ## Development
 
 ```sh
 bun install
 bun run check          # format, lint, typecheck, unit tests
-bun run build          # client, react, and the one published package
+bun run build          # client, react, vue, vanilla, angular, and the one published package
 bun run package:check  # publish guard
-bun run test:bell      # Chrome check against a stub recipient API
+bun run test:bell      # Chrome check of every port against a stub recipient API
 ```
 
 `examples/react` is a Vite demo. It needs `NOTIFICATIONS_URL`, `NOTIFICATIONS_APP_KEY`,
